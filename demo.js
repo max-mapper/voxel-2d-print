@@ -18,7 +18,7 @@ getProxyImage(png, function(image) {
   var data = critter.convertToVoxels(hash)
   var l = data.bounds[0]
   var h = data.bounds[1]
-  var d = [ h[0]-l[0] + 1, h[1]-l[1] + 1, h[2]-l[2] + 1]
+  var d = [ h[0]-l[0] + 2, h[1]-l[1] + 2, h[2]-l[2] + 2]
   var len = d[0] * d[1] * d[2]
   var voxels = ndarray(new Int32Array(len), [d[0], d[1], d[2]])
   
