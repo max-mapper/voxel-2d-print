@@ -1,0 +1,22 @@
+{
+  "name": "voxel-2d-print",
+  "version": "0.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "beefy demo.js"
+  },
+  "author": "",
+  "license": "BSD-2-Clause",
+  "devDependencies": {
+    "beefy": "~0.4.5",
+    "browserify": "~2.35.0"
+  },
+  "dependencies": {
+    "atlaspack": "~0.2.5",
+    "ndarray": "~1.0.8",
+    "ndarray-fill": "~0.1.0",
+    "voxel-critter": "~0.1.1",
+    "color": "~0.4.4"
+  }
+}
