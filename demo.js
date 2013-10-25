@@ -11,9 +11,10 @@ var car = "http://i.imgur.com/ZcSVaqy.png"
 var png = mario
 
 var parsed = url.parse(window.location.href, true)
-if (parsed.query && parsed.query.png) png = parsed.query.png
+if (parsed.query && parsed.query.png) getProxyImage(parsed.query.png, loadImage)
+else document.body.innerHTML = 'Drop voxel png or <a href="?png=http://i.imgur.com/ccBkMVY.png">view example</a>'
 
-getProxyImage(png, function(image) {
+function loadImage(image) {
   var hash = critter.load(image)
   var data = critter.convertToVoxels(hash)
   var l = data.bounds[0]
@@ -36,7 +37,7 @@ getProxyImage(png, function(image) {
 
   image.style.width = '800px'
   
-})
+}
 
 function getProxyImage(imgURL, cb) {
   var proxyURL = 'http://maxcors.jit.su/' + imgURL // until imgur gets CORS on GETs
@@ -47,6 +48,44 @@ function getProxyImage(imgURL, cb) {
     cb(img)
   }
 }
+
+var body = document.body
+
+function noop(event) {
+  event.preventDefault()
+  event.stopPropagation()
+  return false
+}
+
+['dragenter',
+ 'dragleave',
+ 'dragexit',
+ 'dragover'
+].forEach(function (eventType) {
+   body.addEventListener(eventType, noop)
+})
+
+body.addEventListener('drop', function (event) {
+  event.stopPropagation()
+  event.preventDefault()
+  
+  document.body.innerHTML = ""
+
+  var firstFile = event.dataTransfer.files[0]
+  // var reader = new FileReader();
+  // reader.onload = function(e) {
+    // var data = e.target.result
+    var data = firstFile
+    var img = new Image
+    img.onload = function () {
+      loadImage(img)
+    }
+    img.src = URL.createObjectURL(data)
+  // }
+  // reader.readAsBlob(firstFile)
+
+  return false
+})
 
 // // Specify a width and height of the starting atlas
 // var atlas = require('atlaspack')(512, 512);
