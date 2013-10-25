@@ -33,9 +33,8 @@ getProxyImage(png, function(image) {
   document.body.appendChild(image)
 
   var voxelFaces = voxel2dprinter(voxels, data.colors)
-  console.log(voxelFaces)
 
-  image.style.width = '400px'
+  image.style.width = '800px'
   
 })
 
