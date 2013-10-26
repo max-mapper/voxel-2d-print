@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "beefy demo.js"
+    "start": "beefy demo.js:bundle.js"
   },
   "author": "",
   "license": "BSD-2-Clause",
