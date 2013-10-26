@@ -19,13 +19,16 @@ module.exports = function(voxels, colors, size) {
   })
   usedColors = {}
   var layers = sliceLayers(voxels)
+  var canvases = []
   Object.keys(layers).map(function(layer) {
     var canvas = layerCanvas(voxels, layers, layer, size, colors)
-    document.body.appendChild(canvas)
+    canvases.push(canvas)
   })
 
   var strips = extraStrips(size, Object.keys(usedColors))
   document.body.appendChild(strips)
+  
+  canvases.map(function(canv) { document.body.appendChild(canv) })
 }
 
 function sliceLayers(voxels) {
@@ -73,17 +76,14 @@ function layerCanvas(voxels, layers, layerIdx, size, colors, canvas) {
   canvas.setAttribute('height', h * size)
   var ctx = canvas.getContext('2d')
   
-  // Anti-aliasing hack/fix to avoid half pixel rounding errors
-  // ctx.translate(0.5, 0.5)
-    
   for (var x = 0; x < w; x++) {
     for (var z = 0; z < h; z++) {
       var val = layer.get(x, z)
       if (!val) continue
       
       ctx.fillStyle = "black"
-      ctx.font = "18pt Arial"
-      ctx.fillText("layer " + layerIdx, 10, 20)
+      ctx.font = "10pt Arial"
+      ctx.fillText("" + layerIdx, 10, 20)
       
       ctx.fillStyle = colors[val]
       ctx.fillRect(x * size, z * size, size, size)
