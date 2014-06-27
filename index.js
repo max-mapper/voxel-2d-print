@@ -25,6 +25,8 @@ module.exports = function(voxels, colors, size) {
     canvases.push(canvas)
   })
 
+  // add a few extra strips of each color at the top, just so theres extra material
+  // to use for the construction if there ar e.g. holes or accidents
   var strips = extraStrips(size, Object.keys(usedColors))
   document.body.appendChild(strips)
   
@@ -81,14 +83,17 @@ function layerCanvas(voxels, layers, layerIdx, size, colors, canvas) {
       var val = layer.get(x, z)
       if (!val) continue
       
+      // label page number to keep track of layers after printing
       ctx.fillStyle = "black"
       ctx.font = "10pt Arial"
       ctx.fillText("" + layerIdx, 10, 20)
       
+      // fill in colored square
       ctx.fillStyle = colors[val]
       ctx.fillRect(x * size, z * size, size, size)
       usedColors[colors[val]] = true
       
+      // render dotted lines
       var neighbors = emptyNeighbors([x,z], layer)
       neighbors.map(function(dir) {
         var d = dirs[dir]
