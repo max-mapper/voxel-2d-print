@@ -108,10 +108,11 @@ body.addEventListener('drop', function (event) {
 // 
 //   setTimeout(loop, 1000);
 // }());
-},{"./":2,"ndarray":16,"ndarray-fill":7,"url":97,"voxel-critter":18}],2:[function(require,module,exports){
+},{"./":2,"ndarray":17,"ndarray-fill":8,"url":82,"voxel-critter":28}],2:[function(require,module,exports){
 var ndarray = require('ndarray')
 var savePixels = require('save-pixels')
 var color = require('color')
+var contour = require('contour-2d')
 
 var dirs = {
   "right": [1, 0],
@@ -136,6 +137,8 @@ module.exports = function(voxels, colors, size) {
     canvases.push(canvas)
   })
 
+  // add a few extra strips of each color at the top, just so theres extra material
+  // to use for the construction if there ar e.g. holes or accidents
   var strips = extraStrips(size, Object.keys(usedColors))
   document.body.appendChild(strips)
   
@@ -186,20 +189,24 @@ function layerCanvas(voxels, layers, layerIdx, size, colors, canvas) {
   canvas.setAttribute('width', w * size)
   canvas.setAttribute('height', h * size)
   var ctx = canvas.getContext('2d')
+
   
   for (var x = 0; x < w; x++) {
     for (var z = 0; z < h; z++) {
       var val = layer.get(x, z)
       if (!val) continue
       
+      // label page number to keep track of layers after printing
       ctx.fillStyle = "black"
       ctx.font = "10pt Arial"
       ctx.fillText("" + layerIdx, 10, 20)
       
+      // fill in colored square
       ctx.fillStyle = colors[val]
       ctx.fillRect(x * size, z * size, size, size)
       usedColors[colors[val]] = true
       
+      // render dotted lines
       var neighbors = emptyNeighbors([x,z], layer)
       neighbors.map(function(dir) {
         var d = dirs[dir]
@@ -233,6 +240,55 @@ function layerCanvas(voxels, layers, layerIdx, size, colors, canvas) {
       })
     }
   }
+
+  //Render tabs
+  var dilated = ndarray(new Uint8Array((w+2)*(h+2)), [w+2, h+2])
+  for(var i=0; i<w; ++i) {
+    for(var j=0; j<h; ++j) {
+      if(layer.get(i,j) !== 0) {
+        dilated.set(i+1,j+1,1)
+        dilated.set(i,j+1,1)
+        dilated.set(i+2,j+1,1)
+        dilated.set(i+1,j,1)
+        dilated.set(i+1,j+2,1)
+      }
+    }
+  }
+
+
+  function clamp(x) {
+    return (x < 0) ? -1 : ((x > 0) ? 1 : 0)
+  }
+
+
+  var loops = contour(dilated.transpose(1,0))
+  for(var n=0; n<loops.length; ++n) {
+    var loop = loops[n]
+    for(var i=0; i<loop.length; ++i) {
+      var a = loop[i]
+      var b = loop[(i+1) % loop.length]
+
+      var par  = [b[0]-a[0], b[1]-a[1]].map(clamp)
+      var perp = [-par[1], par[0]]
+
+      console.log(par, perp)
+
+      ctx.beginPath()
+      ctx.setLineDash([5])
+
+      ctx.moveTo(size*(a[0]-1), 
+                 size*(a[1]-1))
+      ctx.lineTo(size*(a[0]-1+0.4*(par[0]+0.9*perp[0])), 
+                 size*(a[1]-1+0.4*(par[1]+0.9*perp[1])))
+      ctx.lineTo(size*(b[0]-1+0.4*(-par[0]+0.9*perp[0])), 
+                 size*(b[1]-1+0.4*(-par[1]+0.9*perp[1])))
+      ctx.lineTo(size*(b[0]-1), 
+                 size*(b[1]-1))
+
+      ctx.stroke()
+    }
+  }
+
   
   return canvas
 }
@@ -254,7 +310,7 @@ function emptyNeighbors(pos, layer) {
   return neighbors
 }
 
-},{"color":3,"ndarray":16,"save-pixels":56}],3:[function(require,module,exports){
+},{"color":3,"contour-2d":7,"ndarray":17,"save-pixels":27}],3:[function(require,module,exports){
 /* MIT license */
 var convert = require("color-convert"),
     string = require("color-string");
@@ -1335,6 +1391,195 @@ function hexDouble(num) {
 },{"color-convert":5}],7:[function(require,module,exports){
 "use strict"
 
+module.exports = getContours
+
+function Segment(start, end, direction, height) {
+  this.start = start
+  this.end = end
+  this.direction = direction
+  this.height = height
+  this.visited = false
+  this.next = null
+  this.prev = null
+}
+
+function Vertex(x, y, segment, orientation) {
+  this.x = x
+  this.y = y
+  this.segment = segment
+  this.orientation = orientation
+}
+
+function getParallelCountours(array, direction) {
+  var n = array.shape[0]
+  var m = array.shape[1]
+  var contours = []
+  //Scan top row
+  var a = false
+  var b = false
+  var c = false
+  var d = false
+  var x0 = 0
+  var i=0, j=0
+  for(j=0; j<m; ++j) {
+    b = !!array.get(0, j)
+    if(b === a) {
+      continue
+    }
+    if(a) {
+      contours.push(new Segment(x0, j, direction, 0))
+    }
+    if(b) {
+      x0 = j
+    }
+    a = b
+  }
+  if(a) {
+    contours.push(new Segment(x0, j, direction, 0))
+  }
+  //Scan center
+  for(i=1; i<n; ++i) {
+    a = false
+    b = false
+    x0 = 0
+    for(j=0; j<m; ++j) {
+      c = !!array.get(i-1, j)
+      d = !!array.get(i, j)
+      if(c === a && d === b) {
+        continue
+      }
+      if(a !== b) {
+        if(a) {
+          contours.push(new Segment(j, x0, direction, i))
+        } else {
+          contours.push(new Segment(x0, j, direction, i))
+        }
+      }
+      if(c !== d) {
+        x0 = j
+      }
+      a = c
+      b = d
+    }
+    if(a !== b) {
+      if(a) {
+        contours.push(new Segment(j, x0, direction, i))
+      } else {
+        contours.push(new Segment(x0, j, direction, i))
+      }
+    }
+  }
+  //Scan bottom row
+  a = false
+  x0 = 0
+  for(j=0; j<m; ++j) {
+    b = !!array.get(n-1, j)
+    if(b === a) {
+      continue
+    }
+    if(a) {
+      contours.push(new Segment(j, x0, direction, n))
+    }
+    if(b) {
+      x0 = j
+    }
+    a = b
+  }
+  if(a) {
+    contours.push(new Segment(j, x0, direction, n))
+  }
+  return contours
+}
+
+function getVertices(contours) {
+  var vertices = new Array(contours.length * 2)
+  for(var i=0; i<contours.length; ++i) {
+    var h = contours[i]
+    if(h.direction === 0) {
+      vertices[2*i] = new Vertex(h.start, h.height, h, 0)
+      vertices[2*i+1] = new Vertex(h.end, h.height, h, 1)
+    } else {
+      vertices[2*i] = new Vertex(h.height, h.start, h, 0)
+      vertices[2*i+1] = new Vertex(h.height, h.end, h, 1)
+    }
+  }
+  return vertices
+}
+
+function walk(v, clockwise) {
+  var result = []
+  while(!v.visited) {
+    v.visited = true
+    if(v.direction) {
+      result.push([v.height, v.end])
+    } else {
+      result.push([v.start, v.height])
+    }
+    if(clockwise) {
+      v = v.next
+    } else {
+      v = v.prev
+    }
+  }
+  return result
+}
+
+function compareVertex(a, b) {
+  var d = a.x - b.x
+  if(d) {
+    return d
+  }
+  d = a.y - b.y
+  if(d) {
+    return d
+  }
+  return a.orientation - b.orientation
+}
+
+
+function getContours(array, clockwise) {
+
+  var clockwise = !!clockwise
+
+  //First extract horizontal contours and vertices
+  var hcontours = getParallelCountours(array, 0)
+  var hvertices = getVertices(hcontours)
+  hvertices.sort(compareVertex)
+
+  //Extract vertical contours and vertices
+  var vcontours = getParallelCountours(array.transpose(1, 0), 1)
+  var vvertices = getVertices(vcontours)
+  vvertices.sort(compareVertex)
+
+  //Glue horizontal and vertical vertices together
+  var nv = hvertices.length
+  for(var i=0; i<nv; ++i) {
+    var h = hvertices[i]
+    var v = vvertices[i]
+    if(h.orientation) {
+      h.segment.next = v.segment
+      v.segment.prev = h.segment
+    } else {
+      h.segment.prev = v.segment
+      v.segment.next = h.segment
+    }
+  }
+
+  //Unwrap loops
+  var loops = []
+  for(var i=0; i<hcontours.length; ++i) {
+    var h = hcontours[i]
+    if(!h.visited) {
+      loops.push(walk(h, clockwise))
+    }
+  }
+
+  //Return
+  return loops
+}
+},{}],8:[function(require,module,exports){
+"use strict"
+
 var fill = require("cwise")({
   args: ["index", "array", "scalar"],
   body: function(idx, out, f) {
@@ -1347,7 +1592,7 @@ module.exports = function(array, f) {
   return array
 }
 
-},{"cwise":8}],8:[function(require,module,exports){
+},{"cwise":9}],9:[function(require,module,exports){
 "use strict"
 
 var parse   = require("cwise-parser")
@@ -1384,7 +1629,7 @@ function createCWise(user_args) {
 
 module.exports = createCWise
 
-},{"cwise-compiler":9,"cwise-parser":13}],9:[function(require,module,exports){
+},{"cwise-compiler":10,"cwise-parser":14}],10:[function(require,module,exports){
 "use strict"
 
 var createThunk = require("./lib/thunk.js")
@@ -1490,7 +1735,7 @@ function compileCwise(user_args) {
 
 module.exports = compileCwise
 
-},{"./lib/thunk.js":11}],10:[function(require,module,exports){
+},{"./lib/thunk.js":12}],11:[function(require,module,exports){
 "use strict"
 
 var uniq = require("uniq")
@@ -1747,7 +1992,7 @@ function generateCWiseOp(proc, typesig) {
   return f()
 }
 module.exports = generateCWiseOp
-},{"uniq":12}],11:[function(require,module,exports){
+},{"uniq":13}],12:[function(require,module,exports){
 "use strict"
 
 var compile = require("./compile.js")
@@ -1796,7 +2041,7 @@ function createThunk(proc) {
 
 module.exports = createThunk
 
-},{"./compile.js":10}],12:[function(require,module,exports){
+},{"./compile.js":11}],13:[function(require,module,exports){
 "use strict"
 
 function unique_pred(list, compare) {
@@ -1854,7 +2099,7 @@ function unique(list, compare, sorted) {
 }
 
 module.exports = unique
-},{}],13:[function(require,module,exports){
+},{}],14:[function(require,module,exports){
 "use strict"
 
 var esprima = require("esprima")
@@ -2050,7 +2295,7 @@ function preprocess(func) {
 }
 
 module.exports = preprocess
-},{"esprima":14,"uniq":15}],14:[function(require,module,exports){
+},{"esprima":15,"uniq":16}],15:[function(require,module,exports){
 /*
   Copyright (C) 2012 Ariya Hidayat <ariya.hidayat@gmail.com>
   Copyright (C) 2012 Mathias Bynens <mathias@qiwi.be>
@@ -5960,9 +6205,9 @@ parseStatement: true, parseSourceElement: true */
 }));
 /* vim: set sw=4 ts=4 et tw=80 : */
 
-},{}],15:[function(require,module,exports){
-module.exports=require(12)
 },{}],16:[function(require,module,exports){
+module.exports=require(13)
+},{}],17:[function(require,module,exports){
 "use strict"
 
 var iota = require("iota-array")
@@ -6302,7 +6547,7 @@ function wrappedNDArrayCtor(data, shape, stride, offset) {
 }
 
 module.exports = wrappedNDArrayCtor
-},{"iota-array":17}],17:[function(require,module,exports){
+},{"iota-array":18}],18:[function(require,module,exports){
 "use strict"
 
 function iota(n) {
@@ -6314,7 +6559,1480 @@ function iota(n) {
 }
 
 module.exports = iota
-},{}],18:[function(require,module,exports){
+},{}],19:[function(require,module,exports){
+(function (Buffer){
+// Copyright (c) 2012 Kuba Niegowski
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
+'use strict';
+
+
+var util = require('util'),
+    Stream = require('stream');
+
+
+var ChunkStream = module.exports = function() {
+    Stream.call(this);
+
+    this._buffers = [];
+    this._buffered = 0;
+
+    this._reads = [];
+    this._paused = false;
+
+    this._encoding = 'utf8';
+    this.writable = true;
+};
+util.inherits(ChunkStream, Stream);
+
+
+ChunkStream.prototype.read = function(length, callback) {
+
+    this._reads.push({
+        length: Math.abs(length),  // if length < 0 then at most this length
+        allowLess: length < 0,
+        func: callback
+    });
+
+    this._process();
+
+    // its paused and there is not enought data then ask for more
+    if (this._paused && this._reads.length > 0) {
+        this._paused = false;
+
+        this.emit('drain');
+    }
+};
+
+ChunkStream.prototype.write = function(data, encoding) {
+
+    if (!this.writable) {
+        this.emit('error', new Error('Stream not writable'));
+        return false;
+    }
+
+    if (!Buffer.isBuffer(data))
+        data = new Buffer(data, encoding || this._encoding);
+
+    this._buffers.push(data);
+    this._buffered += data.length;
+
+    this._process();
+
+    // ok if there are no more read requests
+    if (this._reads && this._reads.length == 0)
+        this._paused = true;
+
+    return this.writable && !this._paused;
+};
+
+ChunkStream.prototype.end = function(data, encoding) {
+
+    if (data) this.write(data, encoding);
+
+    this.writable = false;
+
+    // already destroyed
+    if (!this._buffers) return;
+
+    // enqueue or handle end
+    if (this._buffers.length == 0) {
+        this._end();
+    } else {
+        this._buffers.push(null);
+        this._process();
+    }
+};
+
+ChunkStream.prototype.destroySoon = ChunkStream.prototype.end;
+
+ChunkStream.prototype._end = function() {
+
+    if (this._reads.length > 0) {
+        this.emit('error',
+            new Error('There are some read requests waitng on finished stream')
+        );
+    }
+
+    this.destroy();
+};
+
+ChunkStream.prototype.destroy = function() {
+
+    if (!this._buffers) return;
+
+    this.writable = false;
+    this._reads = null;
+    this._buffers = null;
+
+    this.emit('close');
+};
+
+ChunkStream.prototype._process = function() {
+
+    // as long as there is any data and read requests
+    while (this._buffered > 0 && this._reads && this._reads.length > 0) {
+
+        var read = this._reads[0];
+
+        // read any data (but no more than length)
+        if (read.allowLess) {
+
+            // ok there is any data so that we can satisfy this request
+            this._reads.shift(); // == read
+
+            // first we need to peek into first buffer
+            var buf = this._buffers[0];
+
+            // ok there is more data than we need
+            if (buf.length > read.length) {
+
+                this._buffered -= read.length;
+                this._buffers[0] = buf.slice(read.length);
+
+                read.func.call(this, buf.slice(0, read.length));
+
+            } else {
+                // ok this is less than maximum length so use it all
+                this._buffered -= buf.length;
+                this._buffers.shift(); // == buf
+
+                read.func.call(this, buf);
+            }
+
+        } else if (this._buffered >= read.length) {
+            // ok we can meet some expectations
+
+            this._reads.shift(); // == read
+
+            var pos = 0,
+                count = 0,
+                data = new Buffer(read.length);
+
+            // create buffer for all data
+            while (pos < read.length) {
+
+                var buf = this._buffers[count++],
+                    len = Math.min(buf.length, read.length - pos);
+
+                buf.copy(data, pos, 0, len);
+                pos += len;
+
+                // last buffer wasn't used all so just slice it and leave
+                if (len != buf.length)
+                    this._buffers[--count] = buf.slice(len);
+            }
+
+            // remove all used buffers
+            if (count > 0)
+                this._buffers.splice(0, count);
+
+            this._buffered -= read.length;
+
+            read.func.call(this, data);
+
+        } else {
+            // not enought data to satisfy first request in queue
+            // so we need to wait for more
+            break;
+        }
+    }
+
+    if (this._buffers && this._buffers.length > 0 && this._buffers[0] == null) {
+        this._end();
+    }
+};
+
+}).call(this,require("buffer").Buffer)
+},{"buffer":58,"stream":81,"util":84}],20:[function(require,module,exports){
+// Copyright (c) 2012 Kuba Niegowski
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
+'use strict';
+
+
+module.exports = {
+
+    PNG_SIGNATURE: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+
+    TYPE_IHDR: 0x49484452,
+    TYPE_IEND: 0x49454e44,
+    TYPE_IDAT: 0x49444154,
+    TYPE_PLTE: 0x504c5445,
+    TYPE_tRNS: 0x74524e53,
+    TYPE_gAMA: 0x67414d41,
+
+    COLOR_PALETTE: 1,
+    COLOR_COLOR: 2,
+    COLOR_ALPHA: 4
+};
+
+},{}],21:[function(require,module,exports){
+// Copyright (c) 2012 Kuba Niegowski
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
+'use strict';
+
+var util = require('util'),
+    Stream = require('stream');
+
+
+var CrcStream = module.exports = function() {
+    Stream.call(this);
+
+    this._crc = -1;
+
+    this.writable = true;
+};
+util.inherits(CrcStream, Stream);
+
+
+CrcStream.prototype.write = function(data) {
+
+    for (var i = 0; i < data.length; i++) {
+        this._crc = crcTable[(this._crc ^ data[i]) & 0xff] ^ (this._crc >>> 8);
+    }
+    return true;
+};
+
+CrcStream.prototype.end = function(data) {
+    if (data) this.write(data);
+
+    this.emit('crc', this.crc32());
+};
+
+CrcStream.prototype.crc32 = function() {
+    return this._crc ^ -1;
+};
+
+
+CrcStream.crc32 = function(buf) {
+
+    var crc = -1;
+    for (var i = 0; i < buf.length; i++) {
+        crc = crcTable[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8);
+    }
+    return crc ^ -1;
+};
+
+
+
+var crcTable = [];
+
+for (var i = 0; i < 256; i++) {
+    var c = i;
+    for (var j = 0; j < 8; j++) {
+        if (c & 1) {
+            c = 0xedb88320 ^ (c >>> 1);
+        } else {
+            c = c >>> 1;
+        }
+    }
+    crcTable[i] = c;
+}
+
+},{"stream":81,"util":84}],22:[function(require,module,exports){
+(function (Buffer){
+// Copyright (c) 2012 Kuba Niegowski
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
+'use strict';
+
+var util = require('util'),
+    zlib = require('zlib'),
+    ChunkStream = require('./chunkstream');
+
+
+var Filter = module.exports = function(width, height, Bpp, data, options) {
+    ChunkStream.call(this);
+
+    this._width = width;
+    this._height = height;
+    this._Bpp = Bpp;
+    this._data = data;
+    this._options = options;
+
+    this._line = 0;
+
+    if (!('filterType' in options) || options.filterType == -1) {
+        options.filterType = [0, 1, 2, 3, 4];
+    } else if (typeof options.filterType == 'number') {
+        options.filterType = [options.filterType];
+    }
+
+    this._filters = {
+        0: this._filterNone.bind(this),
+        1: this._filterSub.bind(this),
+        2: this._filterUp.bind(this),
+        3: this._filterAvg.bind(this),
+        4: this._filterPaeth.bind(this)
+    };
+
+    this.read(this._width * Bpp + 1, this._reverseFilterLine.bind(this));
+};
+util.inherits(Filter, ChunkStream);
+
+
+var pixelBppMap = {
+    1: { // L
+        0: 0,
+        1: 0,
+        2: 0,
+        3: 0xff
+    },
+    2: { // LA
+        0: 0,
+        1: 0,
+        2: 0,
+        3: 1
+    },
+    3: { // RGB
+        0: 0,
+        1: 1,
+        2: 2,
+        3: 0xff
+    },
+    4: { // RGBA
+        0: 0,
+        1: 1,
+        2: 2,
+        3: 3
+    }
+};
+
+Filter.prototype._reverseFilterLine = function(rawData) {
+
+    var pxData = this._data,
+        pxLineLength = this._width << 2,
+        pxRowPos = this._line * pxLineLength,
+        filter = rawData[0];
+
+    if (filter == 0) {
+        for (var x = 0; x < this._width; x++) {
+            var pxPos = pxRowPos + (x << 2),
+                rawPos = 1 + x * this._Bpp;
+
+            for (var i = 0; i < 4; i++) {
+                var idx = pixelBppMap[this._Bpp][i];
+                pxData[pxPos + i] = idx != 0xff ? rawData[rawPos + idx] : 0xff;
+            }
+        }
+
+    } else if (filter == 1) {
+        for (var x = 0; x < this._width; x++) {
+            var pxPos = pxRowPos + (x << 2),
+                rawPos = 1 + x * this._Bpp;
+
+            for (var i = 0; i < 4; i++) {
+                var idx = pixelBppMap[this._Bpp][i],
+                    left = x > 0 ? pxData[pxPos + i - 4] : 0;
+
+                pxData[pxPos + i] = idx != 0xff ? rawData[rawPos + idx] + left : 0xff;
+            }
+        }
+
+    } else if (filter == 2) {
+        for (var x = 0; x < this._width; x++) {
+            var pxPos = pxRowPos + (x << 2),
+                rawPos = 1 + x * this._Bpp;
+
+            for (var i = 0; i < 4; i++) {
+                var idx = pixelBppMap[this._Bpp][i],
+                    up = this._line > 0 ? pxData[pxPos - pxLineLength + i] : 0;
+
+                pxData[pxPos + i] = idx != 0xff ? rawData[rawPos + idx] + up : 0xff;
+            }
+
+        }
+
+    } else if (filter == 3) {
+        for (var x = 0; x < this._width; x++) {
+            var pxPos = pxRowPos + (x << 2),
+                rawPos = 1 + x * this._Bpp;
+
+            for (var i = 0; i < 4; i++) {
+                var idx = pixelBppMap[this._Bpp][i],
+                    left = x > 0 ? pxData[pxPos + i - 4] : 0,
+                    up = this._line > 0 ? pxData[pxPos - pxLineLength + i] : 0,
+                    add = Math.floor((left + up) / 2);
+
+                 pxData[pxPos + i] = idx != 0xff ? rawData[rawPos + idx] + add : 0xff;
+            }
+
+        }
+
+    } else if (filter == 4) {
+        for (var x = 0; x < this._width; x++) {
+            var pxPos = pxRowPos + (x << 2),
+                rawPos = 1 + x * this._Bpp;
+
+            for (var i = 0; i < 4; i++) {
+                var idx = pixelBppMap[this._Bpp][i],
+                    left = x > 0 ? pxData[pxPos + i - 4] : 0,
+                    up = this._line > 0 ? pxData[pxPos - pxLineLength + i] : 0,
+                    upLeft = x > 0 && this._line > 0
+                            ? pxData[pxPos - pxLineLength + i - 4] : 0,
+                    add = PaethPredictor(left, up, upLeft);
+
+                pxData[pxPos + i] = idx != 0xff ? rawData[rawPos + idx] + add : 0xff;
+            }
+        }
+    }
+
+
+    this._line++;
+
+    if (this._line < this._height)
+        this.read(this._width * this._Bpp + 1, this._reverseFilterLine.bind(this));
+    else
+        this.emit('complete', this._data, this._width, this._height);
+};
+
+
+
+
+Filter.prototype.filter = function() {
+
+    var pxData = this._data,
+        rawData = new Buffer(((this._width << 2) + 1) * this._height);
+
+    for (var y = 0; y < this._height; y++) {
+
+        // find best filter for this line (with lowest sum of values)
+        var filterTypes = this._options.filterType,
+            min = Infinity,
+            sel = 0;
+
+        for (var i = 0; i < filterTypes.length; i++) {
+            var sum = this._filters[filterTypes[i]](pxData, y, null);
+            if (sum < min) {
+                sel = filterTypes[i];
+                min = sum;
+            }
+        }
+
+        this._filters[sel](pxData, y, rawData);
+    }
+    return rawData;
+};
+
+Filter.prototype._filterNone = function(pxData, y, rawData) {
+
+    var pxRowLength = this._width << 2,
+        rawRowLength = pxRowLength + 1,
+        sum = 0;
+
+    if (!rawData) {
+        for (var x = 0; x < pxRowLength; x++)
+            sum += Math.abs(pxData[y * pxRowLength + x]);
+
+    } else {
+        rawData[y * rawRowLength] = 0;
+        pxData.copy(rawData, rawRowLength * y + 1, pxRowLength * y, pxRowLength * (y + 1));
+    }
+
+    return sum;
+};
+
+Filter.prototype._filterSub = function(pxData, y, rawData) {
+
+    var pxRowLength = this._width << 2,
+        rawRowLength = pxRowLength + 1,
+        sum = 0;
+
+    if (rawData)
+        rawData[y * rawRowLength] = 1;
+
+    for (var x = 0; x < pxRowLength; x++) {
+
+        var left = x >= 4 ? pxData[y * pxRowLength + x - 4] : 0,
+            val = pxData[y * pxRowLength + x] - left;
+
+        if (!rawData) sum += Math.abs(val);
+        else rawData[y * rawRowLength + 1 + x] = val;
+    }
+    return sum;
+};
+
+Filter.prototype._filterUp = function(pxData, y, rawData) {
+
+    var pxRowLength = this._width << 2,
+        rawRowLength = pxRowLength + 1,
+        sum = 0;
+
+    if (rawData)
+        rawData[y * rawRowLength] = 2;
+
+    for (var x = 0; x < pxRowLength; x++) {
+
+        var up = y > 0 ? pxData[(y - 1) * pxRowLength + x] : 0,
+            val = pxData[y * pxRowLength + x] - up;
+
+        if (!rawData) sum += Math.abs(val);
+        else rawData[y * rawRowLength + 1 + x] = val;
+    }
+    return sum;
+};
+
+Filter.prototype._filterAvg = function(pxData, y, rawData) {
+
+    var pxRowLength = this._width << 2,
+        rawRowLength = pxRowLength + 1,
+        sum = 0;
+
+    if (rawData)
+        rawData[y * rawRowLength] = 3;
+
+    for (var x = 0; x < pxRowLength; x++) {
+
+        var left = x >= 4 ? pxData[y * pxRowLength + x - 4] : 0,
+            up = y > 0 ? pxData[(y - 1) * pxRowLength + x] : 0,
+            val = pxData[y * pxRowLength + x] - ((left + up) >> 1);
+
+        if (!rawData) sum += Math.abs(val);
+        else rawData[y * rawRowLength + 1 + x] = val;
+    }
+    return sum;
+};
+
+Filter.prototype._filterPaeth = function(pxData, y, rawData) {
+
+    var pxRowLength = this._width << 2,
+        rawRowLength = pxRowLength + 1,
+        sum = 0;
+
+    if (rawData)
+        rawData[y * rawRowLength] = 4;
+
+    for (var x = 0; x < pxRowLength; x++) {
+
+        var left = x >= 4 ? pxData[y * pxRowLength + x - 4] : 0,
+            up = y > 0 ? pxData[(y - 1) * pxRowLength + x] : 0,
+            upLeft = x >= 4 && y > 0 ? pxData[(y - 1) * pxRowLength + x - 4] : 0,
+            val = pxData[y * pxRowLength + x] - PaethPredictor(left, up, upLeft);
+
+        if (!rawData) sum += Math.abs(val);
+        else rawData[y * rawRowLength + 1 + x] = val;
+    }
+    return sum;
+};
+
+
+
+var PaethPredictor = function(left, above, upLeft) {
+
+    var p = left + above - upLeft,
+        pLeft = Math.abs(p - left),
+        pAbove = Math.abs(p - above),
+        pUpLeft = Math.abs(p - upLeft);
+
+    if (pLeft <= pAbove && pLeft <= pUpLeft) return left;
+    else if (pAbove <= pUpLeft) return above;
+    else return upLeft;
+};
+
+}).call(this,require("buffer").Buffer)
+},{"./chunkstream":19,"buffer":58,"util":84,"zlib":57}],23:[function(require,module,exports){
+(function (Buffer){
+// Copyright (c) 2012 Kuba Niegowski
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
+'use strict';
+
+
+var util = require('util'),
+    Stream = require('stream'),
+    zlib = require('zlib'),
+    Filter = require('./filter'),
+    CrcStream = require('./crc'),
+    constants = require('./constants');
+
+
+var Packer = module.exports = function(options) {
+    Stream.call(this);
+
+    this._options = options;
+
+    options.deflateChunkSize = options.deflateChunkSize || 32 * 1024;
+    options.deflateLevel = options.deflateLevel || 9;
+    options.deflateStrategy = options.deflateStrategy || 3;
+
+    this.readable = true;
+};
+util.inherits(Packer, Stream);
+
+
+Packer.prototype.pack = function(data, width, height) {
+
+    // Signature
+    this.emit('data', new Buffer(constants.PNG_SIGNATURE));
+    this.emit('data', this._packIHDR(width, height));
+
+    // filter pixel data
+    var filter = new Filter(width, height, 4, data, this._options);
+    var data = filter.filter();
+
+    // compress it
+    var deflate = zlib.createDeflate({
+            chunkSize: this._options.deflateChunkSize,
+            level: this._options.deflateLevel,
+            strategy: this._options.deflateStrategy
+        });
+    deflate.on('error', this.emit.bind(this, 'error'));
+
+    deflate.on('data', function(data) {
+        this.emit('data', this._packIDAT(data));
+    }.bind(this));
+
+    deflate.on('end', function() {
+        this.emit('data', this._packIEND());
+        this.emit('end');
+    }.bind(this));
+
+    deflate.end(data);
+};
+
+Packer.prototype._packChunk = function(type, data) {
+
+    var len = (data ? data.length : 0),
+        buf = new Buffer(len + 12);
+
+    buf.writeUInt32BE(len, 0);
+    buf.writeUInt32BE(type, 4);
+
+    if (data) data.copy(buf, 8);
+
+    buf.writeInt32BE(CrcStream.crc32(buf.slice(4, buf.length - 4)), buf.length - 4);
+    return buf;
+};
+
+Packer.prototype._packIHDR = function(width, height) {
+
+    var buf = new Buffer(13);
+    buf.writeUInt32BE(width, 0);
+    buf.writeUInt32BE(height, 4);
+    buf[8] = 8;
+    buf[9] = 6; // colorType
+    buf[10] = 0; // compression
+    buf[11] = 0; // filter
+    buf[12] = 0; // interlace
+
+    return this._packChunk(constants.TYPE_IHDR, buf);
+};
+
+Packer.prototype._packIDAT = function(data) {
+    return this._packChunk(constants.TYPE_IDAT, data);
+};
+
+Packer.prototype._packIEND = function() {
+    return this._packChunk(constants.TYPE_IEND, null);
+};
+
+}).call(this,require("buffer").Buffer)
+},{"./constants":20,"./crc":21,"./filter":22,"buffer":58,"stream":81,"util":84,"zlib":57}],24:[function(require,module,exports){
+(function (Buffer){
+// Copyright (c) 2012 Kuba Niegowski
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
+'use strict';
+
+
+var util = require('util'),
+    zlib = require('zlib'),
+    CrcStream = require('./crc'),
+    ChunkStream = require('./chunkstream'),
+    constants = require('./constants'),
+    Filter = require('./filter');
+
+
+var Parser = module.exports = function(options) {
+    ChunkStream.call(this);
+
+    this._options = options;
+    options.checkCRC = options.checkCRC !== false;
+
+    this._hasIHDR = false;
+    this._hasIEND = false;
+
+    this._inflate = null;
+    this._filter = null;
+    this._crc = null;
+
+    // input flags/metadata
+    this._palette = [];
+    this._colorType = 0;
+
+    this._chunks = {};
+    this._chunks[constants.TYPE_IHDR] = this._handleIHDR.bind(this);
+    this._chunks[constants.TYPE_IEND] = this._handleIEND.bind(this);
+    this._chunks[constants.TYPE_IDAT] = this._handleIDAT.bind(this);
+    this._chunks[constants.TYPE_PLTE] = this._handlePLTE.bind(this);
+    this._chunks[constants.TYPE_tRNS] = this._handleTRNS.bind(this);
+    this._chunks[constants.TYPE_gAMA] = this._handleGAMA.bind(this);
+
+    this.writable = true;
+
+    this.on('error', this._handleError.bind(this));
+    this._handleSignature();
+};
+util.inherits(Parser, ChunkStream);
+
+
+Parser.prototype._handleError = function() {
+
+    this.writable = false;
+
+    this.destroy();
+
+    if (this._inflate)
+        this._inflate.destroy();
+};
+
+Parser.prototype._handleSignature = function() {
+    this.read(constants.PNG_SIGNATURE.length,
+        this._parseSignature.bind(this)
+    );
+};
+
+Parser.prototype._parseSignature = function(data) {
+
+    var signature = constants.PNG_SIGNATURE;
+
+    for (var i = 0; i < signature.length; i++) {
+        if (data[i] != signature[i]) {
+            this.emit('error', new Error('Invalid file signature'));
+            return;
+        }
+    }
+    this.read(8, this._parseChunkBegin.bind(this));
+};
+
+Parser.prototype._parseChunkBegin = function(data) {
+
+    // chunk content length
+    var length = data.readUInt32BE(0);
+
+    // chunk type
+    var type = data.readUInt32BE(4),
+        name = '';
+    for (var i = 4; i < 8; i++)
+        name += String.fromCharCode(data[i]);
+
+    // console.log('chunk ', name, length);
+
+    // chunk flags
+    var ancillary  = !!(data[4] & 0x20),  // or critical
+        priv       = !!(data[5] & 0x20),  // or public
+        safeToCopy = !!(data[7] & 0x20);  // or unsafe
+
+    if (!this._hasIHDR && type != constants.TYPE_IHDR) {
+        this.emit('error', new Error('Expected IHDR on beggining'));
+        return;
+    }
+
+    this._crc = new CrcStream();
+    this._crc.write(new Buffer(name));
+
+    if (this._chunks[type]) {
+        return this._chunks[type](length);
+
+    } else if (!ancillary) {
+        this.emit('error', new Error('Unsupported critical chunk type ' + name));
+        return;
+    } else {
+        this.read(length + 4, this._skipChunk.bind(this));
+    }
+};
+
+Parser.prototype._skipChunk = function(data) {
+    this.read(8, this._parseChunkBegin.bind(this));
+};
+
+Parser.prototype._handleChunkEnd = function() {
+    this.read(4, this._parseChunkEnd.bind(this));
+};
+
+Parser.prototype._parseChunkEnd = function(data) {
+
+    var fileCrc = data.readInt32BE(0),
+        calcCrc = this._crc.crc32();
+
+    // check CRC
+    if (this._options.checkCRC && calcCrc != fileCrc) {
+        this.emit('error', new Error('Crc error'));
+        return;
+    }
+
+    if (this._hasIEND) {
+        this.destroySoon();
+
+    } else {
+        this.read(8, this._parseChunkBegin.bind(this));
+    }
+};
+
+
+Parser.prototype._handleIHDR = function(length) {
+    this.read(length, this._parseIHDR.bind(this));
+};
+Parser.prototype._parseIHDR = function(data) {
+
+    this._crc.write(data);
+
+    var width = data.readUInt32BE(0),
+        height = data.readUInt32BE(4),
+        depth = data[8],
+        colorType = data[9], // bits: 1 palette, 2 color, 4 alpha
+        compr = data[10],
+        filter = data[11],
+        interlace = data[12];
+
+    // console.log('    width', width, 'height', height,
+    //     'depth', depth, 'colorType', colorType,
+    //     'compr', compr, 'filter', filter, 'interlace', interlace
+    // );
+
+    if (depth != 8) {
+        this.emit('error', new Error('Unsupported bit depth ' + depth));
+        return;
+    }
+    if (!(colorType in colorTypeToBppMap)) {
+        this.emit('error', new Error('Unsupported color type'));
+        return;
+    }
+    if (compr != 0) {
+        this.emit('error', new Error('Unsupported compression method'));
+        return;
+    }
+    if (filter != 0) {
+        this.emit('error', new Error('Unsupported filter method'));
+        return;
+    }
+    if (interlace != 0) {
+        this.emit('error', new Error('Unsupported interlace method'));
+        return;
+    }
+
+    this._colorType = colorType;
+
+    this._data = new Buffer(width * height * 4);
+    this._filter = new Filter(
+        width, height,
+        colorTypeToBppMap[this._colorType],
+        this._data,
+        this._options
+    );
+
+    this._hasIHDR = true;
+
+    this.emit('metadata', {
+        width: width,
+        height: height,
+        palette: !!(colorType & constants.COLOR_PALETTE),
+        color: !!(colorType & constants.COLOR_COLOR),
+        alpha: !!(colorType & constants.COLOR_ALPHA),
+        data: this._data
+    });
+
+    this._handleChunkEnd();
+};
+
+
+Parser.prototype._handlePLTE = function(length) {
+    this.read(length, this._parsePLTE.bind(this));
+};
+Parser.prototype._parsePLTE = function(data) {
+
+    this._crc.write(data);
+
+    var entries = Math.floor(data.length / 3);
+    // console.log('Palette:', entries);
+
+    for (var i = 0; i < entries; i++) {
+        this._palette.push([
+            data.readUInt8(i * 3),
+            data.readUInt8(i * 3 + 1),
+            data.readUInt8(i * 3 + 2 ),
+            0xff
+        ]);
+    }
+
+    this._handleChunkEnd();
+};
+
+Parser.prototype._handleTRNS = function(length) {
+    this.read(length, this._parseTRNS.bind(this));
+};
+Parser.prototype._parseTRNS = function(data) {
+
+    this._crc.write(data);
+
+    // palette
+    if (this._colorType == 3) {
+        if (this._palette.length == 0) {
+            this.emit('error', new Error('Transparency chunk must be after palette'));
+            return;
+        }
+        if (data.length > this._palette.length) {
+            this.emit('error', new Error('More transparent colors than palette size'));
+            return;
+        }
+        for (var i = 0; i < this._palette.length; i++) {
+            this._palette[i][3] = i < data.length ? data.readUInt8(i) : 0xff;
+        }
+    }
+
+    // for colorType 0 (grayscale) and 2 (rgb)
+    // there might be one gray/color defined as transparent
+
+    this._handleChunkEnd();
+};
+
+Parser.prototype._handleGAMA = function(length) {
+    this.read(length, this._parseGAMA.bind(this));
+};
+Parser.prototype._parseGAMA = function(data) {
+
+    this._crc.write(data);
+    this.emit('gamma', data.readUInt32BE(0) / 100000);
+
+    this._handleChunkEnd();
+};
+
+Parser.prototype._handleIDAT = function(length) {
+    this.read(-length, this._parseIDAT.bind(this, length));
+};
+Parser.prototype._parseIDAT = function(length, data) {
+
+    this._crc.write(data);
+
+    if (this._colorType == 3 && this._palette.length == 0)
+        throw new Error('Expected palette not found');
+
+    if (!this._inflate) {
+        this._inflate = zlib.createInflate();
+
+        this._inflate.on('error', this.emit.bind(this, 'error'));
+        this._filter.on('complete', this._reverseFiltered.bind(this));
+
+        this._inflate.pipe(this._filter);
+    }
+
+    this._inflate.write(data);
+    length -= data.length;
+
+    if (length > 0)
+        this._handleIDAT(length);
+    else
+        this._handleChunkEnd();
+};
+
+
+Parser.prototype._handleIEND = function(length) {
+    this.read(length, this._parseIEND.bind(this));
+};
+Parser.prototype._parseIEND = function(data) {
+
+    this._crc.write(data);
+
+    // no more data to inflate
+    this._inflate.end();
+
+    this._hasIEND = true;
+    this._handleChunkEnd();
+};
+
+
+var colorTypeToBppMap = {
+    0: 1,
+    2: 3,
+    3: 1,
+    4: 2,
+    6: 4
+};
+
+Parser.prototype._reverseFiltered = function(data, width, height) {
+
+    if (this._colorType == 3) { // paletted
+
+        // use values from palette
+        var pxLineLength = width << 2;
+
+        for (var y = 0; y < height; y++) {
+            var pxRowPos = y * pxLineLength;
+
+            for (var x = 0; x < width; x++) {
+                var pxPos = pxRowPos + (x << 2),
+                    color = this._palette[data[pxPos]];
+
+                for (var i = 0; i < 4; i++)
+                    data[pxPos + i] = color[i];
+            }
+        }
+    }
+
+    this.emit('parsed', data);
+};
+
+}).call(this,require("buffer").Buffer)
+},{"./chunkstream":19,"./constants":20,"./crc":21,"./filter":22,"buffer":58,"util":84,"zlib":57}],25:[function(require,module,exports){
+(function (process,Buffer){
+// Copyright (c) 2012 Kuba Niegowski
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
+'use strict';
+
+
+var util = require('util'),
+    Stream = require('stream'),
+    Parser = require('./parser'),
+    Packer = require('./packer');
+
+
+var PNG = exports.PNG = function(options) {
+    Stream.call(this);
+
+    options = options || {};
+
+    this.width = options.width || 0;
+    this.height = options.height || 0;
+
+    this.data = this.width > 0 && this.height > 0
+            ? new Buffer(4 * this.width * this.height) : null;
+
+    this.gamma = 0;
+    this.readable = this.writable = true;
+
+    this._parser = new Parser(options || {});
+
+    this._parser.on('error', this.emit.bind(this, 'error'));
+    this._parser.on('close', this._handleClose.bind(this));
+    this._parser.on('metadata', this._metadata.bind(this));
+    this._parser.on('gamma', this._gamma.bind(this));
+    this._parser.on('parsed', function(data) {
+        this.data = data;
+        this.emit('parsed', data);
+    }.bind(this));
+
+    this._packer = new Packer(options);
+    this._packer.on('data', this.emit.bind(this, 'data'));
+    this._packer.on('end', this.emit.bind(this, 'end'));
+    this._parser.on('close', this._handleClose.bind(this));
+    this._packer.on('error', this.emit.bind(this, 'error'));
+
+};
+util.inherits(PNG, Stream);
+
+
+PNG.prototype.pack = function() {
+
+    process.nextTick(function() {
+        this._packer.pack(this.data, this.width, this.height);
+    }.bind(this));
+
+    return this;
+};
+
+
+PNG.prototype.parse = function(data, callback) {
+
+    if (callback) {
+        var onParsed = null, onError = null;
+
+        this.once('parsed', onParsed = function(data) {
+            this.removeListener('error', onError);
+
+            this.data = data;
+            callback(null, this);
+
+        }.bind(this));
+
+        this.once('error', onError = function(err) {
+            this.removeListener('parsed', onParsed);
+
+            callback(err, null);
+        }.bind(this));
+    }
+
+    this.end(data);
+    return this;
+};
+
+PNG.prototype.write = function(data) {
+    this._parser.write(data);
+    return true;
+};
+
+PNG.prototype.end = function(data) {
+    this._parser.end(data);
+};
+
+PNG.prototype._metadata = function(metadata) {
+    this.width = metadata.width;
+    this.height = metadata.height;
+    this.data = metadata.data;
+
+    delete metadata.data;
+    this.emit('metadata', metadata);
+};
+
+PNG.prototype._gamma = function(gamma) {
+    this.gamma = gamma;
+};
+
+PNG.prototype._handleClose = function() {
+    if (!this._parser.writable && !this._packer.readable)
+        this.emit('close');
+};
+
+
+PNG.prototype.bitblt = function(dst, sx, sy, w, h, dx, dy) {
+
+    var src = this;
+
+    if (sx > src.width || sy > src.height
+            || sx + w > src.width || sy + h > src.height)
+        throw new Error('bitblt reading outside image');
+    if (dx > dst.width || dy > dst.height
+            || dx + w > dst.width || dy + h > dst.height)
+        throw new Error('bitblt writing outside image');
+
+    for (var y = 0; y < h; y++) {
+        src.data.copy(dst.data,
+            ((dy + y) * dst.width + dx) << 2,
+            ((sy + y) * src.width + sx) << 2,
+            ((sy + y) * src.width + sx + w) << 2
+        );
+    }
+
+    return this;
+};
+
+}).call(this,require("q+64fw"),require("buffer").Buffer)
+},{"./packer":23,"./parser":24,"buffer":58,"q+64fw":63,"stream":81,"util":84}],26:[function(require,module,exports){
+(function (process){
+var Stream = require('stream')
+
+// through
+//
+// a stream that does nothing but re-emit the input.
+// useful for aggregating a series of changing but not ending streams into one stream)
+
+exports = module.exports = through
+through.through = through
+
+//create a readable writable stream.
+
+function through (write, end, opts) {
+  write = write || function (data) { this.queue(data) }
+  end = end || function () { this.queue(null) }
+
+  var ended = false, destroyed = false, buffer = [], _ended = false
+  var stream = new Stream()
+  stream.readable = stream.writable = true
+  stream.paused = false
+
+//  stream.autoPause   = !(opts && opts.autoPause   === false)
+  stream.autoDestroy = !(opts && opts.autoDestroy === false)
+
+  stream.write = function (data) {
+    write.call(this, data)
+    return !stream.paused
+  }
+
+  function drain() {
+    while(buffer.length && !stream.paused) {
+      var data = buffer.shift()
+      if(null === data)
+        return stream.emit('end')
+      else
+        stream.emit('data', data)
+    }
+  }
+
+  stream.queue = stream.push = function (data) {
+//    console.error(ended)
+    if(_ended) return stream
+    if(data == null) _ended = true
+    buffer.push(data)
+    drain()
+    return stream
+  }
+
+  //this will be registered as the first 'end' listener
+  //must call destroy next tick, to make sure we're after any
+  //stream piped from here.
+  //this is only a problem if end is not emitted synchronously.
+  //a nicer way to do this is to make sure this is the last listener for 'end'
+
+  stream.on('end', function () {
+    stream.readable = false
+    if(!stream.writable && stream.autoDestroy)
+      process.nextTick(function () {
+        stream.destroy()
+      })
+  })
+
+  function _end () {
+    stream.writable = false
+    end.call(stream)
+    if(!stream.readable && stream.autoDestroy)
+      stream.destroy()
+  }
+
+  stream.end = function (data) {
+    if(ended) return
+    ended = true
+    if(arguments.length) stream.write(data)
+    _end() // will emit or queue
+    return stream
+  }
+
+  stream.destroy = function () {
+    if(destroyed) return
+    destroyed = true
+    ended = true
+    buffer.length = 0
+    stream.writable = stream.readable = false
+    stream.emit('close')
+    return stream
+  }
+
+  stream.pause = function () {
+    if(stream.paused) return
+    stream.paused = true
+    return stream
+  }
+
+  stream.resume = function () {
+    if(stream.paused) {
+      stream.paused = false
+      stream.emit('resume')
+    }
+    drain()
+    //may have become paused again,
+    //as drain emits 'data'.
+    if(!stream.paused)
+      stream.emit('drain')
+    return stream
+  }
+  return stream
+}
+
+
+}).call(this,require("q+64fw"))
+},{"q+64fw":63,"stream":81}],27:[function(require,module,exports){
+"use strict"
+
+var PNG = require("pngjs").PNG
+var through = require("through")
+
+function handleData(array, data) {
+  var i, j, ptr = 0, c
+  if(array.shape.length === 3) {
+    if(array.shape[2] === 3) {
+      for(i=0; i<array.shape[0]; ++i) {
+        for(j=0; j<array.shape[1]; ++j) {
+          data[ptr++] = array.get(i,j,0)>>>0
+          data[ptr++] = array.get(i,j,1)>>>0
+          data[ptr++] = array.get(i,j,2)>>>0
+          data[ptr++] = 255
+        }
+      }
+    } else if(array.shape[2] === 4) {
+      for(i=0; i<array.shape[0]; ++i) {
+        for(j=0; j<array.shape[1]; ++j) {
+          data[ptr++] = array.get(i,j,0)>>>0
+          data[ptr++] = array.get(i,j,1)>>>0
+          data[ptr++] = array.get(i,j,2)>>>0
+          data[ptr++] = array.get(i,j,3)>>>0
+        }
+      }
+    } else if(array.shape[3] === 1) {
+      for(i=0; i<array.shape[0]; ++i) {
+        for(j=0; j<array.shape[1]; ++j) {
+          var c = array.get(i,j,0)>>>0
+          data[ptr++] = c
+          data[ptr++] = c
+          data[ptr++] = c
+          data[ptr++] = 255
+        }
+      }
+    } else {
+      return new Error("Incompatible array shape")
+    }
+  } else if(array.shape.length === 2) {
+    for(i=0; i<array.shape[0]; ++i) {
+      for(j=0; j<array.shape[1]; ++j) {
+        var c = array.get(i,j,0)>>>0
+        data[ptr++] = c
+        data[ptr++] = c
+        data[ptr++] = c
+        data[ptr++] = 255
+      }
+    }
+  } else {
+    return new Error("Incompatible array shape")
+  }
+  return data
+}
+
+function haderror(err) {
+  var result = through()
+  result.emit("error", err)
+  return result
+}
+
+module.exports = function savePixels(array, type) {
+  switch(type.toUpperCase()) {
+    case "PNG":
+    case ".PNG":
+      var png = new PNG({
+        width: array.shape[1],
+        height: array.shape[0]
+      })
+      var data = handleData(array, png.data)
+      if (typeof data === "Error") return haderror(data)
+      png.data = data
+      return png.pack()
+
+    case "CANVAS":
+      var canvas = document.createElement("canvas")
+      var context = canvas.getContext("2d")
+      canvas.width = array.shape[1]
+      canvas.height = array.shape[0]
+      var imageData = context.getImageData(0, 0, canvas.width, canvas.height)
+      var data = imageData.data
+      data = handleData(array, data)
+      if (typeof data === "Error") return haderror(data)
+      context.putImageData(imageData, 0, 0)
+      return canvas
+    
+    default:
+      return haderror(new Error("Unsupported file type: " + type))
+  }
+}
+
+},{"pngjs":25,"through":26}],28:[function(require,module,exports){
 var inherits = require('inherits');
 var lsb = require('lsb');
 var voxelMesh = require('voxel-mesh');
@@ -6458,7 +8176,7 @@ function load(image) {
 
   return text.slice(15);
 };
-},{"inherits":19,"lsb":20,"voxel":26,"voxel-creature":22,"voxel-mesh":24}],19:[function(require,module,exports){
+},{"inherits":29,"lsb":30,"voxel":36,"voxel-creature":32,"voxel-mesh":34}],29:[function(require,module,exports){
 if (typeof Object.create === 'function') {
   // implementation from standard node.js 'util' module
   module.exports = function inherits(ctor, superCtor) {
@@ -6483,7 +8201,7 @@ if (typeof Object.create === 'function') {
   }
 }
 
-},{}],20:[function(require,module,exports){
+},{}],30:[function(require,module,exports){
 var spaceCode = ' '.charCodeAt(0)
 
 function stringToBits(str) {
@@ -6597,7 +8315,7 @@ module.exports = {
 , stringToBits: stringToBits
 }
 
-},{}],21:[function(require,module,exports){
+},{}],31:[function(require,module,exports){
 (function (process){
 var self = self || {};
 
@@ -43557,7 +45275,7 @@ if (typeof exports !== 'undefined') {
 }
 
 }).call(this,require("q+64fw"))
-},{"q+64fw":78}],22:[function(require,module,exports){
+},{"q+64fw":63}],32:[function(require,module,exports){
 var inherits = require('inherits');
 var EventEmitter = require('events').EventEmitter;
 
@@ -43646,7 +45364,7 @@ Creature.prototype.notice = function (target, opts) {
     }, opts.interval);
 };
 
-},{"events":76,"inherits":23}],23:[function(require,module,exports){
+},{"events":61,"inherits":33}],33:[function(require,module,exports){
 module.exports = inherits
 
 function inherits (c, p, proto) {
@@ -43677,7 +45395,7 @@ function inherits (c, p, proto) {
 //inherits(Child, Parent)
 //new Child
 
-},{}],24:[function(require,module,exports){
+},{}],34:[function(require,module,exports){
 var THREE = require('three')
 
 module.exports = function(data, mesher, scaleFactor, three) {
@@ -43847,7 +45565,7 @@ Mesh.prototype.faceVertexUv = function(i) {
 }
 ;
 
-},{"three":21}],25:[function(require,module,exports){
+},{"three":31}],35:[function(require,module,exports){
 var events = require('events')
 var inherits = require('inherits')
 
@@ -43984,7 +45702,7 @@ Chunker.prototype.voxelVector = function(pos) {
   return [vx, vy, vz]
 };
 
-},{"events":76,"inherits":31}],26:[function(require,module,exports){
+},{"events":61,"inherits":41}],36:[function(require,module,exports){
 var chunker = require('./chunker')
 
 module.exports = function(opts) {
@@ -44080,7 +45798,7 @@ module.exports.generateExamples = function() {
 }
 
 
-},{"./chunker":25,"./meshers/culled":27,"./meshers/greedy":28,"./meshers/monotone":29,"./meshers/stupid":30}],27:[function(require,module,exports){
+},{"./chunker":35,"./meshers/culled":37,"./meshers/greedy":38,"./meshers/monotone":39,"./meshers/stupid":40}],37:[function(require,module,exports){
 //Naive meshing (with face culling)
 function CulledMesh(volume, dims) {
   //Precalculate direction vectors for convenience
@@ -44132,7 +45850,7 @@ if(exports) {
   exports.mesher = CulledMesh;
 }
 
-},{}],28:[function(require,module,exports){
+},{}],38:[function(require,module,exports){
 var GreedyMesh = (function() {
 //Cache buffer internally
 var mask = new Int32Array(4096);
@@ -44249,7 +45967,7 @@ if(exports) {
   exports.mesher = GreedyMesh;
 }
 
-},{}],29:[function(require,module,exports){
+},{}],39:[function(require,module,exports){
 "use strict";
 
 var MonotoneMesh = (function(){
@@ -44502,7 +46220,7 @@ if(exports) {
   exports.mesher = MonotoneMesh;
 }
 
-},{}],30:[function(require,module,exports){
+},{}],40:[function(require,module,exports){
 //The stupidest possible way to generate a Minecraft mesh (I think)
 function StupidMesh(volume, dims) {
   var vertices = [], faces = [], x = [0,0,0], n = 0;
@@ -44538,4657 +46256,9 @@ if(exports) {
   exports.mesher = StupidMesh;
 }
 
-},{}],31:[function(require,module,exports){
-module.exports=require(23)
-},{}],32:[function(require,module,exports){
-var proto = {}
-module.exports = proto
-
-proto.from = require('./from.js')
-proto.to = require('./to.js')
-proto.is = require('./is.js')
-proto.subarray = require('./subarray.js')
-proto.join = require('./join.js')
-proto.copy = require('./copy.js')
-proto.create = require('./create.js')
-
-mix(require('./read.js'), proto)
-mix(require('./write.js'), proto)
-
-function mix(from, into) {
-  for(var key in from) {
-    into[key] = from[key]
-  }
-}
-
-},{"./copy.js":35,"./create.js":36,"./from.js":37,"./is.js":38,"./join.js":39,"./read.js":41,"./subarray.js":42,"./to.js":43,"./write.js":44}],33:[function(require,module,exports){
-(function (exports) {
-	'use strict';
-
-	var lookup = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-
-	function b64ToByteArray(b64) {
-		var i, j, l, tmp, placeHolders, arr;
-	
-		if (b64.length % 4 > 0) {
-			throw 'Invalid string. Length must be a multiple of 4';
-		}
-
-		// the number of equal signs (place holders)
-		// if there are two placeholders, than the two characters before it
-		// represent one byte
-		// if there is only one, then the three characters before it represent 2 bytes
-		// this is just a cheap hack to not do indexOf twice
-		placeHolders = b64.indexOf('=');
-		placeHolders = placeHolders > 0 ? b64.length - placeHolders : 0;
-
-		// base64 is 4/3 + up to two characters of the original data
-		arr = [];//new Uint8Array(b64.length * 3 / 4 - placeHolders);
-
-		// if there are placeholders, only get up to the last complete 4 chars
-		l = placeHolders > 0 ? b64.length - 4 : b64.length;
-
-		for (i = 0, j = 0; i < l; i += 4, j += 3) {
-			tmp = (lookup.indexOf(b64[i]) << 18) | (lookup.indexOf(b64[i + 1]) << 12) | (lookup.indexOf(b64[i + 2]) << 6) | lookup.indexOf(b64[i + 3]);
-			arr.push((tmp & 0xFF0000) >> 16);
-			arr.push((tmp & 0xFF00) >> 8);
-			arr.push(tmp & 0xFF);
-		}
-
-		if (placeHolders === 2) {
-			tmp = (lookup.indexOf(b64[i]) << 2) | (lookup.indexOf(b64[i + 1]) >> 4);
-			arr.push(tmp & 0xFF);
-		} else if (placeHolders === 1) {
-			tmp = (lookup.indexOf(b64[i]) << 10) | (lookup.indexOf(b64[i + 1]) << 4) | (lookup.indexOf(b64[i + 2]) >> 2);
-			arr.push((tmp >> 8) & 0xFF);
-			arr.push(tmp & 0xFF);
-		}
-
-		return arr;
-	}
-
-	function uint8ToBase64(uint8) {
-		var i,
-			extraBytes = uint8.length % 3, // if we have 1 byte left, pad 2 bytes
-			output = "",
-			temp, length;
-
-		function tripletToBase64 (num) {
-			return lookup[num >> 18 & 0x3F] + lookup[num >> 12 & 0x3F] + lookup[num >> 6 & 0x3F] + lookup[num & 0x3F];
-		};
-
-		// go through the array every three bytes, we'll deal with trailing stuff later
-		for (i = 0, length = uint8.length - extraBytes; i < length; i += 3) {
-			temp = (uint8[i] << 16) + (uint8[i + 1] << 8) + (uint8[i + 2]);
-			output += tripletToBase64(temp);
-		}
-
-		// pad the end with zeros, but make sure to not forget the extra bytes
-		switch (extraBytes) {
-			case 1:
-				temp = uint8[uint8.length - 1];
-				output += lookup[temp >> 2];
-				output += lookup[(temp << 4) & 0x3F];
-				output += '==';
-				break;
-			case 2:
-				temp = (uint8[uint8.length - 2] << 8) + (uint8[uint8.length - 1]);
-				output += lookup[temp >> 10];
-				output += lookup[(temp >> 4) & 0x3F];
-				output += lookup[(temp << 2) & 0x3F];
-				output += '=';
-				break;
-		}
-
-		return output;
-	}
-
-	module.exports.toByteArray = b64ToByteArray;
-	module.exports.fromByteArray = uint8ToBase64;
-}());
-
-},{}],34:[function(require,module,exports){
-module.exports = to_utf8
-
-var out = []
-  , col = []
-  , fcc = String.fromCharCode
-  , mask = [0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01]
-  , unmask = [
-      0x00
-    , 0x01
-    , 0x02 | 0x01
-    , 0x04 | 0x02 | 0x01
-    , 0x08 | 0x04 | 0x02 | 0x01
-    , 0x10 | 0x08 | 0x04 | 0x02 | 0x01
-    , 0x20 | 0x10 | 0x08 | 0x04 | 0x02 | 0x01
-    , 0x40 | 0x20 | 0x10 | 0x08 | 0x04 | 0x02 | 0x01
-  ]
-
-function to_utf8(bytes, start, end) {
-  start = start === undefined ? 0 : start
-  end = end === undefined ? bytes.length : end
-
-  var idx = 0
-    , hi = 0x80
-    , collecting = 0
-    , pos
-    , by
-
-  col.length =
-  out.length = 0
-
-  while(idx < bytes.length) {
-    by = bytes[idx]
-    if(!collecting && by & hi) {
-      pos = find_pad_position(by)
-      collecting += pos
-      if(pos < 8) {
-        col[col.length] = by & unmask[6 - pos]
-      }
-    } else if(collecting) {
-      col[col.length] = by & unmask[6]
-      --collecting
-      if(!collecting && col.length) {
-        out[out.length] = fcc(reduced(col, pos))
-        col.length = 0
-      }
-    } else { 
-      out[out.length] = fcc(by)
-    }
-    ++idx
-  }
-  if(col.length && !collecting) {
-    out[out.length] = fcc(reduced(col, pos))
-    col.length = 0
-  }
-  return out.join('')
-}
-
-function find_pad_position(byt) {
-  for(var i = 0; i < 7; ++i) {
-    if(!(byt & mask[i])) {
-      break
-    }
-  }
-  return i
-}
-
-function reduced(list) {
-  var out = 0
-  for(var i = 0, len = list.length; i < len; ++i) {
-    out |= list[i] << ((len - i - 1) * 6)
-  }
-  return out
-}
-
-},{}],35:[function(require,module,exports){
-module.exports = copy
-
-var slice = [].slice
-
-function copy(source, target, target_start, source_start, source_end) {
-  target_start = arguments.length < 3 ? 0 : target_start
-  source_start = arguments.length < 4 ? 0 : source_start
-  source_end = arguments.length < 5 ? source.length : source_end
-
-  if(source_end === source_start) {
-    return
-  }
-
-  if(target.length === 0 || source.length === 0) {
-    return
-  }
-
-  if(source_end > source.length) {
-    source_end = source.length
-  }
-
-  if(target.length - target_start < source_end - source_start) {
-    source_end = target.length - target_start + source_start
-  }
-
-  if(source.buffer !== target.buffer) {
-    return fast_copy(source, target, target_start, source_start, source_end)
-  }
-  return slow_copy(source, target, target_start, source_start, source_end)
-}
-
-function fast_copy(source, target, target_start, source_start, source_end) {
-  var len = (source_end - source_start) + target_start
-
-  for(var i = target_start, j = source_start;
-      i < len;
-      ++i,
-      ++j) {
-    target[i] = source[j]
-  }
-}
-
-function slow_copy(from, to, j, i, jend) {
-  // the buffers could overlap.
-  var iend = jend + i
-    , tmp = new Uint8Array(slice.call(from, i, iend))
-    , x = 0
-
-  for(; i < iend; ++i, ++x) {
-    to[j++] = tmp[x]
-  }
-}
-
-},{}],36:[function(require,module,exports){
-module.exports = function(size) {
-  return new Uint8Array(size)
-}
-
-},{}],37:[function(require,module,exports){
-module.exports = from
-
-var base64 = require('base64-js')
-
-var decoders = {
-    hex: from_hex
-  , utf8: from_utf
-  , base64: from_base64
-}
-
-function from(source, encoding) {
-  if(Array.isArray(source)) {
-    return new Uint8Array(source)
-  }
-
-  return decoders[encoding || 'utf8'](source)
-}
-
-function from_hex(str) {
-  var size = str.length / 2
-    , buf = new Uint8Array(size)
-    , character = ''
-
-  for(var i = 0, len = str.length; i < len; ++i) {
-    character += str.charAt(i)
-
-    if(i > 0 && (i % 2) === 1) {
-      buf[i>>>1] = parseInt(character, 16)
-      character = '' 
-    }
-  }
-
-  return buf 
-}
-
-function from_utf(str) {
-  var arr = []
-    , code
-
-  for(var i = 0, len = str.length; i < len; ++i) {
-    code = fixed_cca(str, i)
-
-    if(code === false) {
-      continue
-    }
-
-    if(code < 0x80) {
-      arr[arr.length] = code
-
-      continue
-    }
-
-    codepoint_to_bytes(arr, code)
-  }
-
-  return new Uint8Array(arr)
-}
-
-function codepoint_to_bytes(arr, code) {
-  // find MSB, use that to determine byte count
-  var copy_code = code
-    , bit_count = 0
-    , byte_count
-    , prefix
-    , _byte
-    , pos
-
-  do {
-    ++bit_count
-  } while(copy_code >>>= 1)
-
-  byte_count = Math.ceil((bit_count - 1) / 5) | 0
-  prefix = [0, 0, 0xc0, 0xe0, 0xf0, 0xf8, 0xfc][byte_count]
-  pos = [0, 0, 3, 4, 5, 6, 7][byte_count]
-
-  _byte |= prefix
-
-  bit_count = (7 - pos) + 6 * (byte_count - 1)
-
-  while(bit_count) {
-    _byte |= +!!(code & (1 << bit_count)) << (7 - pos)
-    ++pos
-
-    if(pos % 8 === 0) {
-      arr[arr.length] = _byte
-      _byte = 0x80
-      pos = 2
-    }
-
-    --bit_count
-  }
-
-  if(pos) {
-    arr[arr.length] = _byte
-  }
-}
-
-function pad(str) {
-  while(str.length < 8) {
-    str = '0' + str
-  }
-  return str
-}
-
-function fixed_cca(str, idx) {
-  idx = idx || 0
-
-  var code = str.charCodeAt(idx)
-    , lo
-    , hi
-
-  if(0xD800 <= code && code <= 0xDBFF) {
-    lo = str.charCodeAt(idx + 1)
-    hi = code
-
-    if(isNaN(lo)) {
-      throw new Error('High surrogate not followed by low surrogate')
-    }
-
-    return ((hi - 0xD800) * 0x400) + (lo - 0xDC00) + 0x10000
-  }
-
-  if(0xDC00 <= code && code <= 0xDFFF) {
-    return false
-  }
-
-  return code
-}
-
-
-
-function from_base64(str) {
-  return new Uint8Array(base64.toByteArray(str)) 
-}
-
-},{"base64-js":33}],38:[function(require,module,exports){
-
-module.exports = function(buffer) {
-  return buffer instanceof Uint8Array;
-}
-
-},{}],39:[function(require,module,exports){
-module.exports = join
-
-function join(targets, hint) {
-  if(!targets.length) {
-    return new Uint8Array(0)
-  }
-
-  var len = hint !== undefined ? hint : get_length(targets)
-    , out = new Uint8Array(len)
-    , cur = targets[0]
-    , curlen = cur.length
-    , curidx = 0
-    , curoff = 0
-    , i = 0
-
-  while(i < len) {
-    if(curoff === curlen) {
-      curoff = 0
-      ++curidx
-      cur = targets[curidx]
-      curlen = cur && cur.length
-      continue
-    }
-    out[i++] = cur[curoff++] 
-  }
-
-  return out
-}
-
-function get_length(targets) {
-  var size = 0
-  for(var i = 0, len = targets.length; i < len; ++i) {
-    size += targets[i].byteLength
-  }
-  return size
-}
-
-},{}],40:[function(require,module,exports){
-var proto
-  , map
-
-module.exports = proto = {}
-
-map = typeof WeakMap === 'undefined' ? null : new WeakMap
-
-proto.get = !map ? no_weakmap_get : get
-
-function no_weakmap_get(target) {
-  return new DataView(target.buffer, 0)
-}
-
-function get(target) {
-  var out = map.get(target.buffer)
-  if(!out) {
-    map.set(target.buffer, out = new DataView(target.buffer, 0))
-  }
-  return out
-}
-
 },{}],41:[function(require,module,exports){
-module.exports = {
-    readUInt8:      read_uint8
-  , readInt8:       read_int8
-  , readUInt16LE:   read_uint16_le
-  , readUInt32LE:   read_uint32_le
-  , readInt16LE:    read_int16_le
-  , readInt32LE:    read_int32_le
-  , readFloatLE:    read_float_le
-  , readDoubleLE:   read_double_le
-  , readUInt16BE:   read_uint16_be
-  , readUInt32BE:   read_uint32_be
-  , readInt16BE:    read_int16_be
-  , readInt32BE:    read_int32_be
-  , readFloatBE:    read_float_be
-  , readDoubleBE:   read_double_be
-}
-
-var map = require('./mapped.js')
-
-function read_uint8(target, at) {
-  return target[at]
-}
-
-function read_int8(target, at) {
-  var v = target[at];
-  return v < 0x80 ? v : v - 0x100
-}
-
-function read_uint16_le(target, at) {
-  var dv = map.get(target);
-  return dv.getUint16(at + target.byteOffset, true)
-}
-
-function read_uint32_le(target, at) {
-  var dv = map.get(target);
-  return dv.getUint32(at + target.byteOffset, true)
-}
-
-function read_int16_le(target, at) {
-  var dv = map.get(target);
-  return dv.getInt16(at + target.byteOffset, true)
-}
-
-function read_int32_le(target, at) {
-  var dv = map.get(target);
-  return dv.getInt32(at + target.byteOffset, true)
-}
-
-function read_float_le(target, at) {
-  var dv = map.get(target);
-  return dv.getFloat32(at + target.byteOffset, true)
-}
-
-function read_double_le(target, at) {
-  var dv = map.get(target);
-  return dv.getFloat64(at + target.byteOffset, true)
-}
-
-function read_uint16_be(target, at) {
-  var dv = map.get(target);
-  return dv.getUint16(at + target.byteOffset, false)
-}
-
-function read_uint32_be(target, at) {
-  var dv = map.get(target);
-  return dv.getUint32(at + target.byteOffset, false)
-}
-
-function read_int16_be(target, at) {
-  var dv = map.get(target);
-  return dv.getInt16(at + target.byteOffset, false)
-}
-
-function read_int32_be(target, at) {
-  var dv = map.get(target);
-  return dv.getInt32(at + target.byteOffset, false)
-}
-
-function read_float_be(target, at) {
-  var dv = map.get(target);
-  return dv.getFloat32(at + target.byteOffset, false)
-}
-
-function read_double_be(target, at) {
-  var dv = map.get(target);
-  return dv.getFloat64(at + target.byteOffset, false)
-}
-
-},{"./mapped.js":40}],42:[function(require,module,exports){
-module.exports = subarray
-
-function subarray(buf, from, to) {
-  return buf.subarray(from || 0, to || buf.length)
-}
-
-},{}],43:[function(require,module,exports){
-module.exports = to
-
-var base64 = require('base64-js')
-  , toutf8 = require('to-utf8')
-
-var encoders = {
-    hex: to_hex
-  , utf8: to_utf
-  , base64: to_base64
-}
-
-function to(buf, encoding) {
-  return encoders[encoding || 'utf8'](buf)
-}
-
-function to_hex(buf) {
-  var str = ''
-    , byt
-
-  for(var i = 0, len = buf.length; i < len; ++i) {
-    byt = buf[i]
-    str += ((byt & 0xF0) >>> 4).toString(16)
-    str += (byt & 0x0F).toString(16)
-  }
-
-  return str
-}
-
-function to_utf(buf) {
-  return toutf8(buf)
-}
-
-function to_base64(buf) {
-  return base64.fromByteArray(buf)
-}
-
-
-},{"base64-js":33,"to-utf8":34}],44:[function(require,module,exports){
-module.exports = {
-    writeUInt8:      write_uint8
-  , writeInt8:       write_int8
-  , writeUInt16LE:   write_uint16_le
-  , writeUInt32LE:   write_uint32_le
-  , writeInt16LE:    write_int16_le
-  , writeInt32LE:    write_int32_le
-  , writeFloatLE:    write_float_le
-  , writeDoubleLE:   write_double_le
-  , writeUInt16BE:   write_uint16_be
-  , writeUInt32BE:   write_uint32_be
-  , writeInt16BE:    write_int16_be
-  , writeInt32BE:    write_int32_be
-  , writeFloatBE:    write_float_be
-  , writeDoubleBE:   write_double_be
-}
-
-var map = require('./mapped.js')
-
-function write_uint8(target, value, at) {
-  return target[at] = value
-}
-
-function write_int8(target, value, at) {
-  return target[at] = value < 0 ? value + 0x100 : value
-}
-
-function write_uint16_le(target, value, at) {
-  var dv = map.get(target);
-  return dv.setUint16(at + target.byteOffset, value, true)
-}
-
-function write_uint32_le(target, value, at) {
-  var dv = map.get(target);
-  return dv.setUint32(at + target.byteOffset, value, true)
-}
-
-function write_int16_le(target, value, at) {
-  var dv = map.get(target);
-  return dv.setInt16(at + target.byteOffset, value, true)
-}
-
-function write_int32_le(target, value, at) {
-  var dv = map.get(target);
-  return dv.setInt32(at + target.byteOffset, value, true)
-}
-
-function write_float_le(target, value, at) {
-  var dv = map.get(target);
-  return dv.setFloat32(at + target.byteOffset, value, true)
-}
-
-function write_double_le(target, value, at) {
-  var dv = map.get(target);
-  return dv.setFloat64(at + target.byteOffset, value, true)
-}
-
-function write_uint16_be(target, value, at) {
-  var dv = map.get(target);
-  return dv.setUint16(at + target.byteOffset, value, false)
-}
-
-function write_uint32_be(target, value, at) {
-  var dv = map.get(target);
-  return dv.setUint32(at + target.byteOffset, value, false)
-}
-
-function write_int16_be(target, value, at) {
-  var dv = map.get(target);
-  return dv.setInt16(at + target.byteOffset, value, false)
-}
-
-function write_int32_be(target, value, at) {
-  var dv = map.get(target);
-  return dv.setInt32(at + target.byteOffset, value, false)
-}
-
-function write_float_be(target, value, at) {
-  var dv = map.get(target);
-  return dv.setFloat32(at + target.byteOffset, value, false)
-}
-
-function write_double_be(target, value, at) {
-  var dv = map.get(target);
-  return dv.setFloat64(at + target.byteOffset, value, false)
-}
-
-},{"./mapped.js":40}],45:[function(require,module,exports){
-(function () {
-	'use strict';
-
-	module.exports = {
-		'inflate': require('./lib/rawinflate.js'),
-		'deflate': require('./lib/rawdeflate.js')
-	};
-}());
-
-},{"./lib/rawdeflate.js":46,"./lib/rawinflate.js":47}],46:[function(require,module,exports){
-/*
- * $Id: rawdeflate.js,v 0.3 2009/03/01 19:05:05 dankogai Exp dankogai $
- *
- * Original:
- *   http://www.onicos.com/staff/iz/amuse/javascript/expert/deflate.txt
- */
-
-/* Copyright (C) 1999 Masanao Izumo <iz@onicos.co.jp>
- * Version: 1.0.1
- * LastModified: Dec 25 1999
- */
-
-/* Interface:
- * data = deflate(src);
- */
-
-(function () {
-	/* constant parameters */
-	var WSIZE = 32768, // Sliding Window size
-		STORED_BLOCK = 0,
-		STATIC_TREES = 1,
-		DYN_TREES = 2,
-
-	/* for deflate */
-		DEFAULT_LEVEL = 6,
-		FULL_SEARCH = false,
-		INBUFSIZ = 32768, // Input buffer size
-		//INBUF_EXTRA = 64, // Extra buffer
-		OUTBUFSIZ = 1024 * 8,
-		window_size = 2 * WSIZE,
-		MIN_MATCH = 3,
-		MAX_MATCH = 258,
-		BITS = 16,
-	// for SMALL_MEM
-		LIT_BUFSIZE = 0x2000,
-//		HASH_BITS = 13,
-	//for MEDIUM_MEM
-	//	LIT_BUFSIZE = 0x4000,
-	//	HASH_BITS = 14,
-	// for BIG_MEM
-	//	LIT_BUFSIZE = 0x8000,
-		HASH_BITS = 15,
-		DIST_BUFSIZE = LIT_BUFSIZE,
-		HASH_SIZE = 1 << HASH_BITS,
-		HASH_MASK = HASH_SIZE - 1,
-		WMASK = WSIZE - 1,
-		NIL = 0, // Tail of hash chains
-		TOO_FAR = 4096,
-		MIN_LOOKAHEAD = MAX_MATCH + MIN_MATCH + 1,
-		MAX_DIST = WSIZE - MIN_LOOKAHEAD,
-		SMALLEST = 1,
-		MAX_BITS = 15,
-		MAX_BL_BITS = 7,
-		LENGTH_CODES = 29,
-		LITERALS = 256,
-		END_BLOCK = 256,
-		L_CODES = LITERALS + 1 + LENGTH_CODES,
-		D_CODES = 30,
-		BL_CODES = 19,
-		REP_3_6 = 16,
-		REPZ_3_10 = 17,
-		REPZ_11_138 = 18,
-		HEAP_SIZE = 2 * L_CODES + 1,
-		H_SHIFT = parseInt((HASH_BITS + MIN_MATCH - 1) / MIN_MATCH, 10),
-
-	/* variables */
-		free_queue,
-		qhead,
-		qtail,
-		initflag,
-		outbuf = null,
-		outcnt,
-		outoff,
-		complete,
-		window,
-		d_buf,
-		l_buf,
-		prev,
-		bi_buf,
-		bi_valid,
-		block_start,
-		ins_h,
-		hash_head,
-		prev_match,
-		match_available,
-		match_length,
-		prev_length,
-		strstart,
-		match_start,
-		eofile,
-		lookahead,
-		max_chain_length,
-		max_lazy_match,
-		compr_level,
-		good_match,
-		nice_match,
-		dyn_ltree,
-		dyn_dtree,
-		static_ltree,
-		static_dtree,
-		bl_tree,
-		l_desc,
-		d_desc,
-		bl_desc,
-		bl_count,
-		heap,
-		heap_len,
-		heap_max,
-		depth,
-		length_code,
-		dist_code,
-		base_length,
-		base_dist,
-		flag_buf,
-		last_lit,
-		last_dist,
-		last_flags,
-		flags,
-		flag_bit,
-		opt_len,
-		static_len,
-		deflate_data,
-		deflate_pos;
-
-	if (LIT_BUFSIZE > INBUFSIZ) {
-		console.error("error: INBUFSIZ is too small");
-	}
-	if ((WSIZE << 1) > (1 << BITS)) {
-		console.error("error: WSIZE is too large");
-	}
-	if (HASH_BITS > BITS - 1) {
-		console.error("error: HASH_BITS is too large");
-	}
-	if (HASH_BITS < 8 || MAX_MATCH !== 258) {
-		console.error("error: Code too clever");
-	}
-
-	/* objects (deflate) */
-
-	function DeflateCT() {
-		this.fc = 0; // frequency count or bit string
-		this.dl = 0; // father node in Huffman tree or length of bit string
-	}
-
-	function DeflateTreeDesc() {
-		this.dyn_tree = null; // the dynamic tree
-		this.static_tree = null; // corresponding static tree or NULL
-		this.extra_bits = null; // extra bits for each code or NULL
-		this.extra_base = 0; // base index for extra_bits
-		this.elems = 0; // max number of elements in the tree
-		this.max_length = 0; // max bit length for the codes
-		this.max_code = 0; // largest code with non zero frequency
-	}
-
-	/* Values for max_lazy_match, good_match and max_chain_length, depending on
-	 * the desired pack level (0..9). The values given below have been tuned to
-	 * exclude worst case performance for pathological files. Better values may be
-	 * found for specific files.
-	 */
-	function DeflateConfiguration(a, b, c, d) {
-		this.good_length = a; // reduce lazy search above this match length
-		this.max_lazy = b; // do not perform lazy search above this match length
-		this.nice_length = c; // quit search above this match length
-		this.max_chain = d;
-	}
-
-	function DeflateBuffer() {
-		this.next = null;
-		this.len = 0;
-		this.ptr = []; // new Array(OUTBUFSIZ); // ptr.length is never read
-		this.off = 0;
-	}
-
-	/* constant tables */
-	var extra_lbits = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
-	var extra_dbits = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
-	var extra_blbits = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 3, 7];
-	var bl_order = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
-	var configuration_table = [
-		new DeflateConfiguration(0, 0, 0, 0),
-		new DeflateConfiguration(4, 4, 8, 4),
-		new DeflateConfiguration(4, 5, 16, 8),
-		new DeflateConfiguration(4, 6, 32, 32),
-		new DeflateConfiguration(4, 4, 16, 16),
-		new DeflateConfiguration(8, 16, 32, 32),
-		new DeflateConfiguration(8, 16, 128, 128),
-		new DeflateConfiguration(8, 32, 128, 256),
-		new DeflateConfiguration(32, 128, 258, 1024),
-		new DeflateConfiguration(32, 258, 258, 4096)
-	];
-
-
-	/* routines (deflate) */
-
-	function deflate_start(level) {
-		var i;
-
-		if (!level) {
-			level = DEFAULT_LEVEL;
-		} else if (level < 1) {
-			level = 1;
-		} else if (level > 9) {
-			level = 9;
-		}
-
-		compr_level = level;
-		initflag = false;
-		eofile = false;
-		if (outbuf !== null) {
-			return;
-		}
-
-		free_queue = qhead = qtail = null;
-		outbuf = []; // new Array(OUTBUFSIZ); // outbuf.length never called
-		window = []; // new Array(window_size); // window.length never called
-		d_buf = []; // new Array(DIST_BUFSIZE); // d_buf.length never called
-		l_buf = []; // new Array(INBUFSIZ + INBUF_EXTRA); // l_buf.length never called
-		prev = []; // new Array(1 << BITS); // prev.length never called
-
-		dyn_ltree = [];
-		for (i = 0; i < HEAP_SIZE; i++) {
-			dyn_ltree[i] = new DeflateCT();
-		}
-		dyn_dtree = [];
-		for (i = 0; i < 2 * D_CODES + 1; i++) {
-			dyn_dtree[i] = new DeflateCT();
-		}
-		static_ltree = [];
-		for (i = 0; i < L_CODES + 2; i++) {
-			static_ltree[i] = new DeflateCT();
-		}
-		static_dtree = [];
-		for (i = 0; i < D_CODES; i++) {
-			static_dtree[i] = new DeflateCT();
-		}
-		bl_tree = [];
-		for (i = 0; i < 2 * BL_CODES + 1; i++) {
-			bl_tree[i] = new DeflateCT();
-		}
-		l_desc = new DeflateTreeDesc();
-		d_desc = new DeflateTreeDesc();
-		bl_desc = new DeflateTreeDesc();
-		bl_count = []; // new Array(MAX_BITS+1); // bl_count.length never called
-		heap = []; // new Array(2*L_CODES+1); // heap.length never called
-		depth = []; // new Array(2*L_CODES+1); // depth.length never called
-		length_code = []; // new Array(MAX_MATCH-MIN_MATCH+1); // length_code.length never called
-		dist_code = []; // new Array(512); // dist_code.length never called
-		base_length = []; // new Array(LENGTH_CODES); // base_length.length never called
-		base_dist = []; // new Array(D_CODES); // base_dist.length never called
-		flag_buf = []; // new Array(parseInt(LIT_BUFSIZE / 8, 10)); // flag_buf.length never called
-	}
-
-	function deflate_end() {
-		free_queue = qhead = qtail = null;
-		outbuf = null;
-		window = null;
-		d_buf = null;
-		l_buf = null;
-		prev = null;
-		dyn_ltree = null;
-		dyn_dtree = null;
-		static_ltree = null;
-		static_dtree = null;
-		bl_tree = null;
-		l_desc = null;
-		d_desc = null;
-		bl_desc = null;
-		bl_count = null;
-		heap = null;
-		depth = null;
-		length_code = null;
-		dist_code = null;
-		base_length = null;
-		base_dist = null;
-		flag_buf = null;
-	}
-
-	function reuse_queue(p) {
-		p.next = free_queue;
-		free_queue = p;
-	}
-
-	function new_queue() {
-		var p;
-
-		if (free_queue !== null) {
-			p = free_queue;
-			free_queue = free_queue.next;
-		} else {
-			p = new DeflateBuffer();
-		}
-		p.next = null;
-		p.len = p.off = 0;
-
-		return p;
-	}
-
-	function head1(i) {
-		return prev[WSIZE + i];
-	}
-
-	function head2(i, val) {
-		return (prev[WSIZE + i] = val);
-	}
-
-	/* put_byte is used for the compressed output, put_ubyte for the
-	 * uncompressed output. However unlzw() uses window for its
-	 * suffix table instead of its output buffer, so it does not use put_ubyte
-	 * (to be cleaned up).
-	 */
-	function put_byte(c) {
-		outbuf[outoff + outcnt++] = c;
-		if (outoff + outcnt === OUTBUFSIZ) {
-			qoutbuf();
-		}
-	}
-
-	/* Output a 16 bit value, lsb first */
-	function put_short(w) {
-		w &= 0xffff;
-		if (outoff + outcnt < OUTBUFSIZ - 2) {
-			outbuf[outoff + outcnt++] = (w & 0xff);
-			outbuf[outoff + outcnt++] = (w >>> 8);
-		} else {
-			put_byte(w & 0xff);
-			put_byte(w >>> 8);
-		}
-	}
-
-	/* ==========================================================================
-	 * Insert string s in the dictionary and set match_head to the previous head
-	 * of the hash chain (the most recent string with same hash key). Return
-	 * the previous length of the hash chain.
-	 * IN  assertion: all calls to to INSERT_STRING are made with consecutive
-	 *    input characters and the first MIN_MATCH bytes of s are valid
-	 *    (except for the last MIN_MATCH-1 bytes of the input file).
-	 */
-	function INSERT_STRING() {
-		ins_h = ((ins_h << H_SHIFT) ^ (window[strstart + MIN_MATCH - 1] & 0xff)) & HASH_MASK;
-		hash_head = head1(ins_h);
-		prev[strstart & WMASK] = hash_head;
-		head2(ins_h, strstart);
-	}
-
-	/* Send a code of the given tree. c and tree must not have side effects */
-	function SEND_CODE(c, tree) {
-		send_bits(tree[c].fc, tree[c].dl);
-	}
-
-	/* Mapping from a distance to a distance code. dist is the distance - 1 and
-	 * must not have side effects. dist_code[256] and dist_code[257] are never
-	 * used.
-	 */
-	function D_CODE(dist) {
-		return (dist < 256 ? dist_code[dist] : dist_code[256 + (dist >> 7)]) & 0xff;
-	}
-
-	/* ==========================================================================
-	 * Compares to subtrees, using the tree depth as tie breaker when
-	 * the subtrees have equal frequency. This minimizes the worst case length.
-	 */
-	function SMALLER(tree, n, m) {
-		return tree[n].fc < tree[m].fc || (tree[n].fc === tree[m].fc && depth[n] <= depth[m]);
-	}
-
-	/* ==========================================================================
-	 * read string data
-	 */
-	function read_buff(buff, offset, n) {
-		var i;
-		for (i = 0; i < n && deflate_pos < deflate_data.length; i++) {
-			buff[offset + i] = deflate_data[deflate_pos++] & 0xff;
-		}
-		return i;
-	}
-
-	/* ==========================================================================
-	 * Initialize the "longest match" routines for a new file
-	 */
-	function lm_init() {
-		var j;
-
-		// Initialize the hash table. */
-		for (j = 0; j < HASH_SIZE; j++) {
-			// head2(j, NIL);
-			prev[WSIZE + j] = 0;
-		}
-		// prev will be initialized on the fly */
-
-		// Set the default configuration parameters:
-		max_lazy_match = configuration_table[compr_level].max_lazy;
-		good_match = configuration_table[compr_level].good_length;
-		if (!FULL_SEARCH) {
-			nice_match = configuration_table[compr_level].nice_length;
-		}
-		max_chain_length = configuration_table[compr_level].max_chain;
-
-		strstart = 0;
-		block_start = 0;
-
-		lookahead = read_buff(window, 0, 2 * WSIZE);
-		if (lookahead <= 0) {
-			eofile = true;
-			lookahead = 0;
-			return;
-		}
-		eofile = false;
-		// Make sure that we always have enough lookahead. This is important
-		// if input comes from a device such as a tty.
-		while (lookahead < MIN_LOOKAHEAD && !eofile) {
-			fill_window();
-		}
-
-		// If lookahead < MIN_MATCH, ins_h is garbage, but this is
-		// not important since only literal bytes will be emitted.
-		ins_h = 0;
-		for (j = 0; j < MIN_MATCH - 1; j++) {
-			// UPDATE_HASH(ins_h, window[j]);
-			ins_h = ((ins_h << H_SHIFT) ^ (window[j] & 0xff)) & HASH_MASK;
-		}
-	}
-
-	/* ==========================================================================
-	 * Set match_start to the longest match starting at the given string and
-	 * return its length. Matches shorter or equal to prev_length are discarded,
-	 * in which case the result is equal to prev_length and match_start is
-	 * garbage.
-	 * IN assertions: cur_match is the head of the hash chain for the current
-	 *   string (strstart) and its distance is <= MAX_DIST, and prev_length >= 1
-	 */
-	function longest_match(cur_match) {
-		var chain_length = max_chain_length; // max hash chain length
-		var scanp = strstart; // current string
-		var matchp; // matched string
-		var len; // length of current match
-		var best_len = prev_length; // best match length so far
-
-		// Stop when cur_match becomes <= limit. To simplify the code,
-		// we prevent matches with the string of window index 0.
-		var limit = (strstart > MAX_DIST ? strstart - MAX_DIST : NIL);
-
-		var strendp = strstart + MAX_MATCH;
-		var scan_end1 = window[scanp + best_len - 1];
-		var scan_end = window[scanp + best_len];
-
-		var i, broke;
-
-		// Do not waste too much time if we already have a good match: */
-		if (prev_length >= good_match) {
-			chain_length >>= 2;
-		}
-
-		// Assert(encoder->strstart <= window_size-MIN_LOOKAHEAD, "insufficient lookahead");
-
-		do {
-			// Assert(cur_match < encoder->strstart, "no future");
-			matchp = cur_match;
-
-			// Skip to next match if the match length cannot increase
-			// or if the match length is less than 2:
-			if (window[matchp + best_len] !== scan_end  ||
-					window[matchp + best_len - 1] !== scan_end1 ||
-					window[matchp] !== window[scanp] ||
-					window[++matchp] !== window[scanp + 1]) {
-				continue;
-			}
-
-			// The check at best_len-1 can be removed because it will be made
-			// again later. (This heuristic is not always a win.)
-			// It is not necessary to compare scan[2] and match[2] since they
-			// are always equal when the other bytes match, given that
-			// the hash keys are equal and that HASH_BITS >= 8.
-			scanp += 2;
-			matchp++;
-
-			// We check for insufficient lookahead only every 8th comparison;
-			// the 256th check will be made at strstart+258.
-			while (scanp < strendp) {
-				broke = false;
-				for (i = 0; i < 8; i += 1) {
-					scanp += 1;
-					matchp += 1;
-					if (window[scanp] !== window[matchp]) {
-						broke = true;
-						break;
-					}
-				}
-
-				if (broke) {
-					break;
-				}
-			}
-
-			len = MAX_MATCH - (strendp - scanp);
-			scanp = strendp - MAX_MATCH;
-
-			if (len > best_len) {
-				match_start = cur_match;
-				best_len = len;
-				if (FULL_SEARCH) {
-					if (len >= MAX_MATCH) {
-						break;
-					}
-				} else {
-					if (len >= nice_match) {
-						break;
-					}
-				}
-
-				scan_end1 = window[scanp + best_len - 1];
-				scan_end = window[scanp + best_len];
-			}
-		} while ((cur_match = prev[cur_match & WMASK]) > limit && --chain_length !== 0);
-
-		return best_len;
-	}
-
-	/* ==========================================================================
-	 * Fill the window when the lookahead becomes insufficient.
-	 * Updates strstart and lookahead, and sets eofile if end of input file.
-	 * IN assertion: lookahead < MIN_LOOKAHEAD && strstart + lookahead > 0
-	 * OUT assertions: at least one byte has been read, or eofile is set;
-	 *    file reads are performed for at least two bytes (required for the
-	 *    translate_eol option).
-	 */
-	function fill_window() {
-		var n, m;
-
-	 // Amount of free space at the end of the window.
-		var more = window_size - lookahead - strstart;
-
-		// If the window is almost full and there is insufficient lookahead,
-		// move the upper half to the lower one to make room in the upper half.
-		if (more === -1) {
-			// Very unlikely, but possible on 16 bit machine if strstart == 0
-			// and lookahead == 1 (input done one byte at time)
-			more--;
-		} else if (strstart >= WSIZE + MAX_DIST) {
-			// By the IN assertion, the window is not empty so we can't confuse
-			// more == 0 with more == 64K on a 16 bit machine.
-			// Assert(window_size == (ulg)2*WSIZE, "no sliding with BIG_MEM");
-
-			// System.arraycopy(window, WSIZE, window, 0, WSIZE);
-			for (n = 0; n < WSIZE; n++) {
-				window[n] = window[n + WSIZE];
-			}
-
-			match_start -= WSIZE;
-			strstart    -= WSIZE; /* we now have strstart >= MAX_DIST: */
-			block_start -= WSIZE;
-
-			for (n = 0; n < HASH_SIZE; n++) {
-				m = head1(n);
-				head2(n, m >= WSIZE ? m - WSIZE : NIL);
-			}
-			for (n = 0; n < WSIZE; n++) {
-			// If n is not on any hash chain, prev[n] is garbage but
-			// its value will never be used.
-				m = prev[n];
-				prev[n] = (m >= WSIZE ? m - WSIZE : NIL);
-			}
-			more += WSIZE;
-		}
-		// At this point, more >= 2
-		if (!eofile) {
-			n = read_buff(window, strstart + lookahead, more);
-			if (n <= 0) {
-				eofile = true;
-			} else {
-				lookahead += n;
-			}
-		}
-	}
-
-	/* ==========================================================================
-	 * Processes a new input file and return its compressed length. This
-	 * function does not perform lazy evaluationof matches and inserts
-	 * new strings in the dictionary only for unmatched strings or for short
-	 * matches. It is used only for the fast compression options.
-	 */
-	function deflate_fast() {
-		while (lookahead !== 0 && qhead === null) {
-			var flush; // set if current block must be flushed
-
-			// Insert the string window[strstart .. strstart+2] in the
-			// dictionary, and set hash_head to the head of the hash chain:
-			INSERT_STRING();
-
-			// Find the longest match, discarding those <= prev_length.
-			// At this point we have always match_length < MIN_MATCH
-			if (hash_head !== NIL && strstart - hash_head <= MAX_DIST) {
-				// To simplify the code, we prevent matches with the string
-				// of window index 0 (in particular we have to avoid a match
-				// of the string with itself at the start of the input file).
-				match_length = longest_match(hash_head);
-				// longest_match() sets match_start */
-				if (match_length > lookahead) {
-					match_length = lookahead;
-				}
-			}
-			if (match_length >= MIN_MATCH) {
-				// check_match(strstart, match_start, match_length);
-
-				flush = ct_tally(strstart - match_start, match_length - MIN_MATCH);
-				lookahead -= match_length;
-
-				// Insert new strings in the hash table only if the match length
-				// is not too large. This saves time but degrades compression.
-				if (match_length <= max_lazy_match) {
-					match_length--; // string at strstart already in hash table
-					do {
-						strstart++;
-						INSERT_STRING();
-						// strstart never exceeds WSIZE-MAX_MATCH, so there are
-						// always MIN_MATCH bytes ahead. If lookahead < MIN_MATCH
-						// these bytes are garbage, but it does not matter since
-						// the next lookahead bytes will be emitted as literals.
-					} while (--match_length !== 0);
-					strstart++;
-				} else {
-					strstart += match_length;
-					match_length = 0;
-					ins_h = window[strstart] & 0xff;
-					// UPDATE_HASH(ins_h, window[strstart + 1]);
-					ins_h = ((ins_h << H_SHIFT) ^ (window[strstart + 1] & 0xff)) & HASH_MASK;
-
-				//#if MIN_MATCH !== 3
-				//		Call UPDATE_HASH() MIN_MATCH-3 more times
-				//#endif
-
-				}
-			} else {
-				// No match, output a literal byte */
-				flush = ct_tally(0, window[strstart] & 0xff);
-				lookahead--;
-				strstart++;
-			}
-			if (flush) {
-				flush_block(0);
-				block_start = strstart;
-			}
-
-			// Make sure that we always have enough lookahead, except
-			// at the end of the input file. We need MAX_MATCH bytes
-			// for the next match, plus MIN_MATCH bytes to insert the
-			// string following the next match.
-			while (lookahead < MIN_LOOKAHEAD && !eofile) {
-				fill_window();
-			}
-		}
-	}
-
-	function deflate_better() {
-		// Process the input block. */
-		while (lookahead !== 0 && qhead === null) {
-			// Insert the string window[strstart .. strstart+2] in the
-			// dictionary, and set hash_head to the head of the hash chain:
-			INSERT_STRING();
-
-			// Find the longest match, discarding those <= prev_length.
-			prev_length = match_length;
-			prev_match = match_start;
-			match_length = MIN_MATCH - 1;
-
-			if (hash_head !== NIL && prev_length < max_lazy_match && strstart - hash_head <= MAX_DIST) {
-				// To simplify the code, we prevent matches with the string
-				// of window index 0 (in particular we have to avoid a match
-				// of the string with itself at the start of the input file).
-				match_length = longest_match(hash_head);
-				// longest_match() sets match_start */
-				if (match_length > lookahead) {
-					match_length = lookahead;
-				}
-
-				// Ignore a length 3 match if it is too distant: */
-				if (match_length === MIN_MATCH && strstart - match_start > TOO_FAR) {
-					// If prev_match is also MIN_MATCH, match_start is garbage
-					// but we will ignore the current match anyway.
-					match_length--;
-				}
-			}
-			// If there was a match at the previous step and the current
-			// match is not better, output the previous match:
-			if (prev_length >= MIN_MATCH && match_length <= prev_length) {
-				var flush; // set if current block must be flushed
-
-				// check_match(strstart - 1, prev_match, prev_length);
-				flush = ct_tally(strstart - 1 - prev_match, prev_length - MIN_MATCH);
-
-				// Insert in hash table all strings up to the end of the match.
-				// strstart-1 and strstart are already inserted.
-				lookahead -= prev_length - 1;
-				prev_length -= 2;
-				do {
-					strstart++;
-					INSERT_STRING();
-					// strstart never exceeds WSIZE-MAX_MATCH, so there are
-					// always MIN_MATCH bytes ahead. If lookahead < MIN_MATCH
-					// these bytes are garbage, but it does not matter since the
-					// next lookahead bytes will always be emitted as literals.
-				} while (--prev_length !== 0);
-				match_available = false;
-				match_length = MIN_MATCH - 1;
-				strstart++;
-				if (flush) {
-					flush_block(0);
-					block_start = strstart;
-				}
-			} else if (match_available) {
-				// If there was no match at the previous position, output a
-				// single literal. If there was a match but the current match
-				// is longer, truncate the previous match to a single literal.
-				if (ct_tally(0, window[strstart - 1] & 0xff)) {
-					flush_block(0);
-					block_start = strstart;
-				}
-				strstart++;
-				lookahead--;
-			} else {
-				// There is no previous match to compare with, wait for
-				// the next step to decide.
-				match_available = true;
-				strstart++;
-				lookahead--;
-			}
-
-			// Make sure that we always have enough lookahead, except
-			// at the end of the input file. We need MAX_MATCH bytes
-			// for the next match, plus MIN_MATCH bytes to insert the
-			// string following the next match.
-			while (lookahead < MIN_LOOKAHEAD && !eofile) {
-				fill_window();
-			}
-		}
-	}
-
-	function init_deflate() {
-		if (eofile) {
-			return;
-		}
-		bi_buf = 0;
-		bi_valid = 0;
-		ct_init();
-		lm_init();
-
-		qhead = null;
-		outcnt = 0;
-		outoff = 0;
-
-		if (compr_level <= 3) {
-			prev_length = MIN_MATCH - 1;
-			match_length = 0;
-		} else {
-			match_length = MIN_MATCH - 1;
-			match_available = false;
-		}
-
-		complete = false;
-	}
-
-	/* ==========================================================================
-	 * Same as above, but achieves better compression. We use a lazy
-	 * evaluation for matches: a match is finally adopted only if there is
-	 * no better match at the next window position.
-	 */
-	function deflate_internal(buff, off, buff_size) {
-		var n;
-
-		if (!initflag) {
-			init_deflate();
-			initflag = true;
-			if (lookahead === 0) { // empty
-				complete = true;
-				return 0;
-			}
-		}
-
-		n = qcopy(buff, off, buff_size);
-		if (n === buff_size) {
-			return buff_size;
-		}
-
-		if (complete) {
-			return n;
-		}
-
-		if (compr_level <= 3) {
-			// optimized for speed
-			deflate_fast();
-		} else {
-			deflate_better();
-		}
-
-		if (lookahead === 0) {
-			if (match_available) {
-				ct_tally(0, window[strstart - 1] & 0xff);
-			}
-			flush_block(1);
-			complete = true;
-		}
-
-		return n + qcopy(buff, n + off, buff_size - n);
-	}
-
-	function qcopy(buff, off, buff_size) {
-		var n, i, j;
-
-		n = 0;
-		while (qhead !== null && n < buff_size) {
-			i = buff_size - n;
-			if (i > qhead.len) {
-				i = qhead.len;
-			}
-			// System.arraycopy(qhead.ptr, qhead.off, buff, off + n, i);
-			for (j = 0; j < i; j++) {
-				buff[off + n + j] = qhead.ptr[qhead.off + j];
-			}
-
-			qhead.off += i;
-			qhead.len -= i;
-			n += i;
-			if (qhead.len === 0) {
-				var p;
-				p = qhead;
-				qhead = qhead.next;
-				reuse_queue(p);
-			}
-		}
-
-		if (n === buff_size) {
-			return n;
-		}
-
-		if (outoff < outcnt) {
-			i = buff_size - n;
-			if (i > outcnt - outoff) {
-				i = outcnt - outoff;
-			}
-			// System.arraycopy(outbuf, outoff, buff, off + n, i);
-			for (j = 0; j < i; j++) {
-				buff[off + n + j] = outbuf[outoff + j];
-			}
-			outoff += i;
-			n += i;
-			if (outcnt === outoff) {
-				outcnt = outoff = 0;
-			}
-		}
-		return n;
-	}
-
-	/* ==========================================================================
-	 * Allocate the match buffer, initialize the various tables and save the
-	 * location of the internal file attribute (ascii/binary) and method
-	 * (DEFLATE/STORE).
-	 */
-	function ct_init() {
-		var n; // iterates over tree elements
-		var bits; // bit counter
-		var length; // length value
-		var code; // code value
-		var dist; // distance index
-
-		if (static_dtree[0].dl !== 0) {
-			return; // ct_init already called
-		}
-
-		l_desc.dyn_tree = dyn_ltree;
-		l_desc.static_tree = static_ltree;
-		l_desc.extra_bits = extra_lbits;
-		l_desc.extra_base = LITERALS + 1;
-		l_desc.elems = L_CODES;
-		l_desc.max_length = MAX_BITS;
-		l_desc.max_code = 0;
-
-		d_desc.dyn_tree = dyn_dtree;
-		d_desc.static_tree = static_dtree;
-		d_desc.extra_bits = extra_dbits;
-		d_desc.extra_base = 0;
-		d_desc.elems = D_CODES;
-		d_desc.max_length = MAX_BITS;
-		d_desc.max_code = 0;
-
-		bl_desc.dyn_tree = bl_tree;
-		bl_desc.static_tree = null;
-		bl_desc.extra_bits = extra_blbits;
-		bl_desc.extra_base = 0;
-		bl_desc.elems = BL_CODES;
-		bl_desc.max_length = MAX_BL_BITS;
-		bl_desc.max_code = 0;
-
-	 // Initialize the mapping length (0..255) -> length code (0..28)
-		length = 0;
-		for (code = 0; code < LENGTH_CODES - 1; code++) {
-			base_length[code] = length;
-			for (n = 0; n < (1 << extra_lbits[code]); n++) {
-				length_code[length++] = code;
-			}
-		}
-	 // Assert (length === 256, "ct_init: length !== 256");
-
-		// Note that the length 255 (match length 258) can be represented
-		// in two different ways: code 284 + 5 bits or code 285, so we
-		// overwrite length_code[255] to use the best encoding:
-		length_code[length - 1] = code;
-
-		// Initialize the mapping dist (0..32K) -> dist code (0..29) */
-		dist = 0;
-		for (code = 0; code < 16; code++) {
-			base_dist[code] = dist;
-			for (n = 0; n < (1 << extra_dbits[code]); n++) {
-				dist_code[dist++] = code;
-			}
-		}
-		// Assert (dist === 256, "ct_init: dist !== 256");
-		// from now on, all distances are divided by 128
-		for (dist >>= 7; code < D_CODES; code++) {
-			base_dist[code] = dist << 7;
-			for (n = 0; n < (1 << (extra_dbits[code] - 7)); n++) {
-				dist_code[256 + dist++] = code;
-			}
-		}
-		// Assert (dist === 256, "ct_init: 256+dist !== 512");
-
-		// Construct the codes of the static literal tree
-		for (bits = 0; bits <= MAX_BITS; bits++) {
-			bl_count[bits] = 0;
-		}
-		n = 0;
-		while (n <= 143) {
-			static_ltree[n++].dl = 8;
-			bl_count[8]++;
-		}
-		while (n <= 255) {
-			static_ltree[n++].dl = 9;
-			bl_count[9]++;
-		}
-		while (n <= 279) {
-			static_ltree[n++].dl = 7;
-			bl_count[7]++;
-		}
-		while (n <= 287) {
-			static_ltree[n++].dl = 8;
-			bl_count[8]++;
-		}
-		// Codes 286 and 287 do not exist, but we must include them in the
-		// tree construction to get a canonical Huffman tree (longest code
-		// all ones)
-		gen_codes(static_ltree, L_CODES + 1);
-
-		// The static distance tree is trivial: */
-		for (n = 0; n < D_CODES; n++) {
-			static_dtree[n].dl = 5;
-			static_dtree[n].fc = bi_reverse(n, 5);
-		}
-
-		// Initialize the first block of the first file:
-		init_block();
-	}
-
-	/* ==========================================================================
-	 * Initialize a new block.
-	 */
-	function init_block() {
-		var n; // iterates over tree elements
-
-		// Initialize the trees.
-		for (n = 0; n < L_CODES;  n++) {
-			dyn_ltree[n].fc = 0;
-		}
-		for (n = 0; n < D_CODES;  n++) {
-			dyn_dtree[n].fc = 0;
-		}
-		for (n = 0; n < BL_CODES; n++) {
-			bl_tree[n].fc = 0;
-		}
-
-		dyn_ltree[END_BLOCK].fc = 1;
-		opt_len = static_len = 0;
-		last_lit = last_dist = last_flags = 0;
-		flags = 0;
-		flag_bit = 1;
-	}
-
-	/* ==========================================================================
-	 * Restore the heap property by moving down the tree starting at node k,
-	 * exchanging a node with the smallest of its two sons if necessary, stopping
-	 * when the heap property is re-established (each father smaller than its
-	 * two sons).
-	 *
-	 * @param tree- tree to restore
-	 * @param k- node to move down
-	 */
-	function pqdownheap(tree, k) {
-		var v = heap[k],
-			j = k << 1; // left son of k
-
-		while (j <= heap_len) {
-			// Set j to the smallest of the two sons:
-			if (j < heap_len && SMALLER(tree, heap[j + 1], heap[j])) {
-				j++;
-			}
-
-			// Exit if v is smaller than both sons
-			if (SMALLER(tree, v, heap[j])) {
-				break;
-			}
-
-			// Exchange v with the smallest son
-			heap[k] = heap[j];
-			k = j;
-
-			// And continue down the tree, setting j to the left son of k
-			j <<= 1;
-		}
-		heap[k] = v;
-	}
-
-	/* ==========================================================================
-	 * Compute the optimal bit lengths for a tree and update the total bit length
-	 * for the current block.
-	 * IN assertion: the fields freq and dad are set, heap[heap_max] and
-	 *    above are the tree nodes sorted by increasing frequency.
-	 * OUT assertions: the field len is set to the optimal bit length, the
-	 *     array bl_count contains the frequencies for each bit length.
-	 *     The length opt_len is updated; static_len is also updated if stree is
-	 *     not null.
-	 */
-	function gen_bitlen(desc) { // the tree descriptor
-		var tree = desc.dyn_tree;
-		var extra = desc.extra_bits;
-		var base = desc.extra_base;
-		var max_code = desc.max_code;
-		var max_length = desc.max_length;
-		var stree = desc.static_tree;
-		var h; // heap index
-		var n, m; // iterate over the tree elements
-		var bits; // bit length
-		var xbits; // extra bits
-		var f; // frequency
-		var overflow = 0; // number of elements with bit length too large
-
-		for (bits = 0; bits <= MAX_BITS; bits++) {
-			bl_count[bits] = 0;
-		}
-
-		// In a first pass, compute the optimal bit lengths (which may
-		// overflow in the case of the bit length tree).
-		tree[heap[heap_max]].dl = 0; // root of the heap
-
-		for (h = heap_max + 1; h < HEAP_SIZE; h++) {
-			n = heap[h];
-			bits = tree[tree[n].dl].dl + 1;
-			if (bits > max_length) {
-				bits = max_length;
-				overflow++;
-			}
-			tree[n].dl = bits;
-			// We overwrite tree[n].dl which is no longer needed
-
-			if (n > max_code) {
-				continue; // not a leaf node
-			}
-
-			bl_count[bits]++;
-			xbits = 0;
-			if (n >= base) {
-				xbits = extra[n - base];
-			}
-			f = tree[n].fc;
-			opt_len += f * (bits + xbits);
-			if (stree !== null) {
-				static_len += f * (stree[n].dl + xbits);
-			}
-		}
-		if (overflow === 0) {
-			return;
-		}
-
-		// This happens for example on obj2 and pic of the Calgary corpus
-
-		// Find the first bit length which could increase:
-		do {
-			bits = max_length - 1;
-			while (bl_count[bits] === 0) {
-				bits--;
-			}
-			bl_count[bits]--; // move one leaf down the tree
-			bl_count[bits + 1] += 2; // move one overflow item as its brother
-			bl_count[max_length]--;
-			// The brother of the overflow item also moves one step up,
-			// but this does not affect bl_count[max_length]
-			overflow -= 2;
-		} while (overflow > 0);
-
-		// Now recompute all bit lengths, scanning in increasing frequency.
-		// h is still equal to HEAP_SIZE. (It is simpler to reconstruct all
-		// lengths instead of fixing only the wrong ones. This idea is taken
-		// from 'ar' written by Haruhiko Okumura.)
-		for (bits = max_length; bits !== 0; bits--) {
-			n = bl_count[bits];
-			while (n !== 0) {
-				m = heap[--h];
-				if (m > max_code) {
-					continue;
-				}
-				if (tree[m].dl !== bits) {
-					opt_len += (bits - tree[m].dl) * tree[m].fc;
-					tree[m].fc = bits;
-				}
-				n--;
-			}
-		}
-	}
-
-	  /* ==========================================================================
-	   * Generate the codes for a given tree and bit counts (which need not be
-	   * optimal).
-	   * IN assertion: the array bl_count contains the bit length statistics for
-	   * the given tree and the field len is set for all tree elements.
-	   * OUT assertion: the field code is set for all tree elements of non
-	   *     zero code length.
-	   * @param tree- the tree to decorate
-	   * @param max_code- largest code with non-zero frequency
-	   */
-	function gen_codes(tree, max_code) {
-		var next_code = []; // new Array(MAX_BITS + 1); // next code value for each bit length
-		var code = 0; // running code value
-		var bits; // bit index
-		var n; // code index
-
-		// The distribution counts are first used to generate the code values
-		// without bit reversal.
-		for (bits = 1; bits <= MAX_BITS; bits++) {
-			code = ((code + bl_count[bits - 1]) << 1);
-			next_code[bits] = code;
-		}
-
-		// Check that the bit counts in bl_count are consistent. The last code
-		// must be all ones.
-		// Assert (code + encoder->bl_count[MAX_BITS]-1 === (1<<MAX_BITS)-1, "inconsistent bit counts");
-		// Tracev((stderr,"\ngen_codes: max_code %d ", max_code));
-
-		for (n = 0; n <= max_code; n++) {
-			var len = tree[n].dl;
-			if (len === 0) {
-				continue;
-			}
-			// Now reverse the bits
-			tree[n].fc = bi_reverse(next_code[len]++, len);
-
-			// Tracec(tree !== static_ltree, (stderr,"\nn %3d %c l %2d c %4x (%x) ", n, (isgraph(n) ? n : ' '), len, tree[n].fc, next_code[len]-1));
-		}
-	}
-
-	/* ==========================================================================
-	 * Construct one Huffman tree and assigns the code bit strings and lengths.
-	 * Update the total bit length for the current block.
-	 * IN assertion: the field freq is set for all tree elements.
-	 * OUT assertions: the fields len and code are set to the optimal bit length
-	 *     and corresponding code. The length opt_len is updated; static_len is
-	 *     also updated if stree is not null. The field max_code is set.
-	 */
-	function build_tree(desc) { // the tree descriptor
-		var tree = desc.dyn_tree;
-		var stree = desc.static_tree;
-		var elems = desc.elems;
-		var n, m; // iterate over heap elements
-		var max_code = -1; // largest code with non zero frequency
-		var node = elems; // next internal node of the tree
-
-		// Construct the initial heap, with least frequent element in
-		// heap[SMALLEST]. The sons of heap[n] are heap[2*n] and heap[2*n+1].
-		// heap[0] is not used.
-		heap_len = 0;
-		heap_max = HEAP_SIZE;
-
-		for (n = 0; n < elems; n++) {
-			if (tree[n].fc !== 0) {
-				heap[++heap_len] = max_code = n;
-				depth[n] = 0;
-			} else {
-				tree[n].dl = 0;
-			}
-		}
-
-		// The pkzip format requires that at least one distance code exists,
-		// and that at least one bit should be sent even if there is only one
-		// possible code. So to avoid special checks later on we force at least
-		// two codes of non zero frequency.
-		while (heap_len < 2) {
-			var xnew = heap[++heap_len] = (max_code < 2 ? ++max_code : 0);
-			tree[xnew].fc = 1;
-			depth[xnew] = 0;
-			opt_len--;
-			if (stree !== null) {
-				static_len -= stree[xnew].dl;
-			}
-			// new is 0 or 1 so it does not have extra bits
-		}
-		desc.max_code = max_code;
-
-		// The elements heap[heap_len/2+1 .. heap_len] are leaves of the tree,
-		// establish sub-heaps of increasing lengths:
-		for (n = heap_len >> 1; n >= 1; n--) {
-			pqdownheap(tree, n);
-		}
-
-		// Construct the Huffman tree by repeatedly combining the least two
-		// frequent nodes.
-		do {
-			n = heap[SMALLEST];
-			heap[SMALLEST] = heap[heap_len--];
-			pqdownheap(tree, SMALLEST);
-
-			m = heap[SMALLEST]; // m = node of next least frequency
-
-			// keep the nodes sorted by frequency
-			heap[--heap_max] = n;
-			heap[--heap_max] = m;
-
-			// Create a new node father of n and m
-			tree[node].fc = tree[n].fc + tree[m].fc;
-			//	depth[node] = (char)(MAX(depth[n], depth[m]) + 1);
-			if (depth[n] > depth[m] + 1) {
-				depth[node] = depth[n];
-			} else {
-				depth[node] = depth[m] + 1;
-			}
-			tree[n].dl = tree[m].dl = node;
-
-			// and insert the new node in the heap
-			heap[SMALLEST] = node++;
-			pqdownheap(tree, SMALLEST);
-
-		} while (heap_len >= 2);
-
-		heap[--heap_max] = heap[SMALLEST];
-
-		// At this point, the fields freq and dad are set. We can now
-		// generate the bit lengths.
-		gen_bitlen(desc);
-
-		// The field len is now set, we can generate the bit codes
-		gen_codes(tree, max_code);
-	}
-
-	/* ==========================================================================
-	 * Scan a literal or distance tree to determine the frequencies of the codes
-	 * in the bit length tree. Updates opt_len to take into account the repeat
-	 * counts. (The contribution of the bit length codes will be added later
-	 * during the construction of bl_tree.)
-	 *
-	 * @param tree- the tree to be scanned
-	 * @param max_code- and its largest code of non zero frequency
-	 */
-	function scan_tree(tree, max_code) {
-		var n, // iterates over all tree elements
-			prevlen = -1, // last emitted length
-			curlen, // length of current code
-			nextlen = tree[0].dl, // length of next code
-			count = 0, // repeat count of the current code
-			max_count = 7, // max repeat count
-			min_count = 4; // min repeat count
-
-		if (nextlen === 0) {
-			max_count = 138;
-			min_count = 3;
-		}
-		tree[max_code + 1].dl = 0xffff; // guard
-
-		for (n = 0; n <= max_code; n++) {
-			curlen = nextlen;
-			nextlen = tree[n + 1].dl;
-			if (++count < max_count && curlen === nextlen) {
-				continue;
-			} else if (count < min_count) {
-				bl_tree[curlen].fc += count;
-			} else if (curlen !== 0) {
-				if (curlen !== prevlen) {
-					bl_tree[curlen].fc++;
-				}
-				bl_tree[REP_3_6].fc++;
-			} else if (count <= 10) {
-				bl_tree[REPZ_3_10].fc++;
-			} else {
-				bl_tree[REPZ_11_138].fc++;
-			}
-			count = 0; prevlen = curlen;
-			if (nextlen === 0) {
-				max_count = 138;
-				min_count = 3;
-			} else if (curlen === nextlen) {
-				max_count = 6;
-				min_count = 3;
-			} else {
-				max_count = 7;
-				min_count = 4;
-			}
-		}
-	}
-
-	/* ==========================================================================
-	 * Send a literal or distance tree in compressed form, using the codes in
-	 * bl_tree.
-	 *
-	 * @param tree- the tree to be scanned
-	 * @param max_code- and its largest code of non zero frequency
-	 */
-	function send_tree(tree, max_code) {
-		var n; // iterates over all tree elements
-		var prevlen = -1; // last emitted length
-		var curlen; // length of current code
-		var nextlen = tree[0].dl; // length of next code
-		var count = 0; // repeat count of the current code
-		var max_count = 7; // max repeat count
-		var min_count = 4; // min repeat count
-
-		// tree[max_code+1].dl = -1; */  /* guard already set */
-		if (nextlen === 0) {
-			max_count = 138;
-			min_count = 3;
-		}
-
-		for (n = 0; n <= max_code; n++) {
-			curlen = nextlen;
-			nextlen = tree[n + 1].dl;
-			if (++count < max_count && curlen === nextlen) {
-				continue;
-			} else if (count < min_count) {
-				do {
-					SEND_CODE(curlen, bl_tree);
-				} while (--count !== 0);
-			} else if (curlen !== 0) {
-				if (curlen !== prevlen) {
-					SEND_CODE(curlen, bl_tree);
-					count--;
-				}
-			// Assert(count >= 3 && count <= 6, " 3_6?");
-				SEND_CODE(REP_3_6, bl_tree);
-				send_bits(count - 3, 2);
-			} else if (count <= 10) {
-				SEND_CODE(REPZ_3_10, bl_tree);
-				send_bits(count - 3, 3);
-			} else {
-				SEND_CODE(REPZ_11_138, bl_tree);
-				send_bits(count - 11, 7);
-			}
-			count = 0;
-			prevlen = curlen;
-			if (nextlen === 0) {
-				max_count = 138;
-				min_count = 3;
-			} else if (curlen === nextlen) {
-				max_count = 6;
-				min_count = 3;
-			} else {
-				max_count = 7;
-				min_count = 4;
-			}
-		}
-	}
-
-	/* ==========================================================================
-	 * Construct the Huffman tree for the bit lengths and return the index in
-	 * bl_order of the last bit length code to send.
-	 */
-	function build_bl_tree() {
-		var max_blindex; // index of last bit length code of non zero freq
-
-		// Determine the bit length frequencies for literal and distance trees
-		scan_tree(dyn_ltree, l_desc.max_code);
-		scan_tree(dyn_dtree, d_desc.max_code);
-
-		// Build the bit length tree:
-		build_tree(bl_desc);
-		// opt_len now includes the length of the tree representations, except
-		// the lengths of the bit lengths codes and the 5+5+4 bits for the counts.
-
-		// Determine the number of bit length codes to send. The pkzip format
-		// requires that at least 4 bit length codes be sent. (appnote.txt says
-		// 3 but the actual value used is 4.)
-		for (max_blindex = BL_CODES - 1; max_blindex >= 3; max_blindex--) {
-			if (bl_tree[bl_order[max_blindex]].dl !== 0) {
-				break;
-			}
-		}
-		// Update opt_len to include the bit length tree and counts */
-		opt_len += 3 * (max_blindex + 1) + 5 + 5 + 4;
-		// Tracev((stderr, "\ndyn trees: dyn %ld, stat %ld",
-		// encoder->opt_len, encoder->static_len));
-
-		return max_blindex;
-	}
-
-	/* ==========================================================================
-	 * Send the header for a block using dynamic Huffman trees: the counts, the
-	 * lengths of the bit length codes, the literal tree and the distance tree.
-	 * IN assertion: lcodes >= 257, dcodes >= 1, blcodes >= 4.
-	 */
-	function send_all_trees(lcodes, dcodes, blcodes) { // number of codes for each tree
-		var rank; // index in bl_order
-
-		// Assert (lcodes >= 257 && dcodes >= 1 && blcodes >= 4, "not enough codes");
-		// Assert (lcodes <= L_CODES && dcodes <= D_CODES && blcodes <= BL_CODES, "too many codes");
-		// Tracev((stderr, "\nbl counts: "));
-		send_bits(lcodes - 257, 5); // not +255 as stated in appnote.txt
-		send_bits(dcodes - 1,   5);
-		send_bits(blcodes - 4,  4); // not -3 as stated in appnote.txt
-		for (rank = 0; rank < blcodes; rank++) {
-			// Tracev((stderr, "\nbl code %2d ", bl_order[rank]));
-			send_bits(bl_tree[bl_order[rank]].dl, 3);
-		}
-
-		// send the literal tree
-		send_tree(dyn_ltree, lcodes - 1);
-
-		// send the distance tree
-		send_tree(dyn_dtree, dcodes - 1);
-	}
-
-	/* ==========================================================================
-	 * Determine the best encoding for the current block: dynamic trees, static
-	 * trees or store, and output the encoded block to the zip file.
-	 */
-	function flush_block(eof) { // true if this is the last block for a file
-		var opt_lenb, static_lenb, // opt_len and static_len in bytes
-			max_blindex, // index of last bit length code of non zero freq
-			stored_len, // length of input block
-			i;
-
-		stored_len = strstart - block_start;
-		flag_buf[last_flags] = flags; // Save the flags for the last 8 items
-
-		// Construct the literal and distance trees
-		build_tree(l_desc);
-		// Tracev((stderr, "\nlit data: dyn %ld, stat %ld",
-		// encoder->opt_len, encoder->static_len));
-
-		build_tree(d_desc);
-		// Tracev((stderr, "\ndist data: dyn %ld, stat %ld",
-		// encoder->opt_len, encoder->static_len));
-		// At this point, opt_len and static_len are the total bit lengths of
-		// the compressed block data, excluding the tree representations.
-
-		// Build the bit length tree for the above two trees, and get the index
-		// in bl_order of the last bit length code to send.
-		max_blindex = build_bl_tree();
-
-	 // Determine the best encoding. Compute first the block length in bytes
-		opt_lenb = (opt_len + 3 + 7) >> 3;
-		static_lenb = (static_len + 3 + 7) >> 3;
-
-	//  Trace((stderr, "\nopt %lu(%lu) stat %lu(%lu) stored %lu lit %u dist %u ", opt_lenb, encoder->opt_len, static_lenb, encoder->static_len, stored_len, encoder->last_lit, encoder->last_dist));
-
-		if (static_lenb <= opt_lenb) {
-			opt_lenb = static_lenb;
-		}
-		if (stored_len + 4 <= opt_lenb && block_start >= 0) { // 4: two words for the lengths
-			// The test buf !== NULL is only necessary if LIT_BUFSIZE > WSIZE.
-			// Otherwise we can't have processed more than WSIZE input bytes since
-			// the last block flush, because compression would have been
-			// successful. If LIT_BUFSIZE <= WSIZE, it is never too late to
-			// transform a block into a stored block.
-			send_bits((STORED_BLOCK << 1) + eof, 3);  /* send block type */
-			bi_windup();         /* align on byte boundary */
-			put_short(stored_len);
-			put_short(~stored_len);
-
-			// copy block
-			/*
-				p = &window[block_start];
-				for (i = 0; i < stored_len; i++) {
-					put_byte(p[i]);
-				}
-			*/
-			for (i = 0; i < stored_len; i++) {
-				put_byte(window[block_start + i]);
-			}
-		} else if (static_lenb === opt_lenb) {
-			send_bits((STATIC_TREES << 1) + eof, 3);
-			compress_block(static_ltree, static_dtree);
-		} else {
-			send_bits((DYN_TREES << 1) + eof, 3);
-			send_all_trees(l_desc.max_code + 1, d_desc.max_code + 1, max_blindex + 1);
-			compress_block(dyn_ltree, dyn_dtree);
-		}
-
-		init_block();
-
-		if (eof !== 0) {
-			bi_windup();
-		}
-	}
-
-	/* ==========================================================================
-	 * Save the match info and tally the frequency counts. Return true if
-	 * the current block must be flushed.
-	 *
-	 * @param dist- distance of matched string
-	 * @param lc- (match length - MIN_MATCH) or unmatched char (if dist === 0)
-	 */
-	function ct_tally(dist, lc) {
-		l_buf[last_lit++] = lc;
-		if (dist === 0) {
-			// lc is the unmatched char
-			dyn_ltree[lc].fc++;
-		} else {
-			// Here, lc is the match length - MIN_MATCH
-			dist--; // dist = match distance - 1
-			// Assert((ush)dist < (ush)MAX_DIST && (ush)lc <= (ush)(MAX_MATCH-MIN_MATCH) && (ush)D_CODE(dist) < (ush)D_CODES,  "ct_tally: bad match");
-
-			dyn_ltree[length_code[lc] + LITERALS + 1].fc++;
-			dyn_dtree[D_CODE(dist)].fc++;
-
-			d_buf[last_dist++] = dist;
-			flags |= flag_bit;
-		}
-		flag_bit <<= 1;
-
-		// Output the flags if they fill a byte
-		if ((last_lit & 7) === 0) {
-			flag_buf[last_flags++] = flags;
-			flags = 0;
-			flag_bit = 1;
-		}
-		// Try to guess if it is profitable to stop the current block here
-		if (compr_level > 2 && (last_lit & 0xfff) === 0) {
-			// Compute an upper bound for the compressed length
-			var out_length = last_lit * 8;
-			var in_length = strstart - block_start;
-			var dcode;
-
-			for (dcode = 0; dcode < D_CODES; dcode++) {
-				out_length += dyn_dtree[dcode].fc * (5 + extra_dbits[dcode]);
-			}
-			out_length >>= 3;
-			// Trace((stderr,"\nlast_lit %u, last_dist %u, in %ld, out ~%ld(%ld%%) ", encoder->last_lit, encoder->last_dist, in_length, out_length, 100L - out_length*100L/in_length));
-			if (last_dist < parseInt(last_lit / 2, 10) && out_length < parseInt(in_length / 2, 10)) {
-				return true;
-			}
-		}
-		return (last_lit === LIT_BUFSIZE - 1 || last_dist === DIST_BUFSIZE);
-		// We avoid equality with LIT_BUFSIZE because of wraparound at 64K
-		// on 16 bit machines and because stored blocks are restricted to
-		// 64K-1 bytes.
-	}
-
-	  /* ==========================================================================
-	   * Send the block data compressed using the given Huffman trees
-	   *
-	   * @param ltree- literal tree
-	   * @param dtree- distance tree
-	   */
-	function compress_block(ltree, dtree) {
-		var dist; // distance of matched string
-		var lc; // match length or unmatched char (if dist === 0)
-		var lx = 0; // running index in l_buf
-		var dx = 0; // running index in d_buf
-		var fx = 0; // running index in flag_buf
-		var flag = 0; // current flags
-		var code; // the code to send
-		var extra; // number of extra bits to send
-
-		if (last_lit !== 0) {
-			do {
-				if ((lx & 7) === 0) {
-					flag = flag_buf[fx++];
-				}
-				lc = l_buf[lx++] & 0xff;
-				if ((flag & 1) === 0) {
-					SEND_CODE(lc, ltree); /* send a literal byte */
-					//	Tracecv(isgraph(lc), (stderr," '%c' ", lc));
-				} else {
-					// Here, lc is the match length - MIN_MATCH
-					code = length_code[lc];
-					SEND_CODE(code + LITERALS + 1, ltree); // send the length code
-					extra = extra_lbits[code];
-					if (extra !== 0) {
-						lc -= base_length[code];
-						send_bits(lc, extra); // send the extra length bits
-					}
-					dist = d_buf[dx++];
-					// Here, dist is the match distance - 1
-					code = D_CODE(dist);
-					//	Assert (code < D_CODES, "bad d_code");
-
-					SEND_CODE(code, dtree); // send the distance code
-					extra = extra_dbits[code];
-					if (extra !== 0) {
-						dist -= base_dist[code];
-						send_bits(dist, extra); // send the extra distance bits
-					}
-				} // literal or match pair ?
-				flag >>= 1;
-			} while (lx < last_lit);
-		}
-
-		SEND_CODE(END_BLOCK, ltree);
-	}
-
-	/* ==========================================================================
-	 * Send a value on a given number of bits.
-	 * IN assertion: length <= 16 and value fits in length bits.
-	 *
-	 * @param value- value to send
-	 * @param length- number of bits
-	 */
-	var Buf_size = 16; // bit size of bi_buf
-	function send_bits(value, length) {
-		// If not enough room in bi_buf, use (valid) bits from bi_buf and
-		// (16 - bi_valid) bits from value, leaving (width - (16-bi_valid))
-		// unused bits in value.
-		if (bi_valid > Buf_size - length) {
-			bi_buf |= (value << bi_valid);
-			put_short(bi_buf);
-			bi_buf = (value >> (Buf_size - bi_valid));
-			bi_valid += length - Buf_size;
-		} else {
-			bi_buf |= value << bi_valid;
-			bi_valid += length;
-		}
-	}
-
-	/* ==========================================================================
-	 * Reverse the first len bits of a code, using straightforward code (a faster
-	 * method would use a table)
-	 * IN assertion: 1 <= len <= 15
-	 *
-	 * @param code- the value to invert
-	 * @param len- its bit length
-	 */
-	function bi_reverse(code, len) {
-		var res = 0;
-		do {
-			res |= code & 1;
-			code >>= 1;
-			res <<= 1;
-		} while (--len > 0);
-		return res >> 1;
-	}
-
-	/* ==========================================================================
-	 * Write out any remaining bits in an incomplete byte.
-	 */
-	function bi_windup() {
-		if (bi_valid > 8) {
-			put_short(bi_buf);
-		} else if (bi_valid > 0) {
-			put_byte(bi_buf);
-		}
-		bi_buf = 0;
-		bi_valid = 0;
-	}
-
-	function qoutbuf() {
-		var q, i;
-		if (outcnt !== 0) {
-			q = new_queue();
-			if (qhead === null) {
-				qhead = qtail = q;
-			} else {
-				qtail = qtail.next = q;
-			}
-			q.len = outcnt - outoff;
-			// System.arraycopy(outbuf, outoff, q.ptr, 0, q.len);
-			for (i = 0; i < q.len; i++) {
-				q.ptr[i] = outbuf[outoff + i];
-			}
-			outcnt = outoff = 0;
-		}
-	}
-
-	function deflate(arr, level) {
-		var i, j, buff;
-
-		deflate_data = arr;
-		deflate_pos = 0;
-		if (typeof level === "undefined") {
-			level = DEFAULT_LEVEL;
-		}
-		deflate_start(level);
-
-		buff = [];
-
-		do {
-			i = deflate_internal(buff, buff.length, 1024);
-		} while (i > 0);
-
-		deflate_data = null; // G.C.
-		return buff;
-	}
-
-	module.exports = deflate;
-	module.exports.DEFAULT_LEVEL = DEFAULT_LEVEL;
-}());
-
-},{}],47:[function(require,module,exports){
-/*
- * $Id: rawinflate.js,v 0.2 2009/03/01 18:32:24 dankogai Exp $
- *
- * original:
- * http://www.onicos.com/staff/iz/amuse/javascript/expert/inflate.txt
- */
-
-/* Copyright (C) 1999 Masanao Izumo <iz@onicos.co.jp>
- * Version: 1.0.0.1
- * LastModified: Dec 25 1999
- */
-
-/* Interface:
- * data = inflate(src);
- */
-
-(function () {
-	/* constant parameters */
-	var WSIZE = 32768, // Sliding Window size
-		STORED_BLOCK = 0,
-		STATIC_TREES = 1,
-		DYN_TREES = 2,
-
-	/* for inflate */
-		lbits = 9, // bits in base literal/length lookup table
-		dbits = 6, // bits in base distance lookup table
-
-	/* variables (inflate) */
-		slide,
-		wp, // current position in slide
-		fixed_tl = null, // inflate static
-		fixed_td, // inflate static
-		fixed_bl, // inflate static
-		fixed_bd, // inflate static
-		bit_buf, // bit buffer
-		bit_len, // bits in bit buffer
-		method,
-		eof,
-		copy_leng,
-		copy_dist,
-		tl, // literal length decoder table
-		td, // literal distance decoder table
-		bl, // number of bits decoded by tl
-		bd, // number of bits decoded by td
-
-		inflate_data,
-		inflate_pos,
-
-
-/* constant tables (inflate) */
-		MASK_BITS = [
-			0x0000,
-			0x0001, 0x0003, 0x0007, 0x000f, 0x001f, 0x003f, 0x007f, 0x00ff,
-			0x01ff, 0x03ff, 0x07ff, 0x0fff, 0x1fff, 0x3fff, 0x7fff, 0xffff
-		],
-		// Tables for deflate from PKZIP's appnote.txt.
-		// Copy lengths for literal codes 257..285
-		cplens = [
-			3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
-			35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258, 0, 0
-		],
-/* note: see note #13 above about the 258 in this list. */
-		// Extra bits for literal codes 257..285
-		cplext = [
-			0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
-			3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0, 99, 99 // 99==invalid
-		],
-		// Copy offsets for distance codes 0..29
-		cpdist = [
-			1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
-			257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145,
-			8193, 12289, 16385, 24577
-		],
-		// Extra bits for distance codes
-		cpdext = [
-			0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
-			7, 7, 8, 8, 9, 9, 10, 10, 11, 11,
-			12, 12, 13, 13
-		],
-		// Order of the bit length code lengths
-		border = [
-			16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
-		];
-	/* objects (inflate) */
-
-	function HuftList() {
-		this.next = null;
-		this.list = null;
-	}
-
-	function HuftNode() {
-		this.e = 0; // number of extra bits or operation
-		this.b = 0; // number of bits in this code or subcode
-
-		// union
-		this.n = 0; // literal, length base, or distance base
-		this.t = null; // (HuftNode) pointer to next level of table
-	}
-
-	/*
-	 * @param b-  code lengths in bits (all assumed <= BMAX)
-	 * @param n- number of codes (assumed <= N_MAX)
-	 * @param s- number of simple-valued codes (0..s-1)
-	 * @param d- list of base values for non-simple codes
-	 * @param e- list of extra bits for non-simple codes
-	 * @param mm- maximum lookup bits
-	 */
-	function HuftBuild(b, n, s, d, e, mm) {
-		this.BMAX = 16; // maximum bit length of any code
-		this.N_MAX = 288; // maximum number of codes in any set
-		this.status = 0; // 0: success, 1: incomplete table, 2: bad input
-		this.root = null; // (HuftList) starting table
-		this.m = 0; // maximum lookup bits, returns actual
-
-	/* Given a list of code lengths and a maximum table size, make a set of
-	   tables to decode that set of codes. Return zero on success, one if
-	   the given code set is incomplete (the tables are still built in this
-	   case), two if the input is invalid (all zero length codes or an
-	   oversubscribed set of lengths), and three if not enough memory.
-	   The code with value 256 is special, and the tables are constructed
-	   so that no bits beyond that code are fetched when that code is
-	   decoded. */
-		var a; // counter for codes of length k
-		var c = [];
-		var el; // length of EOB code (value 256)
-		var f; // i repeats in table every f entries
-		var g; // maximum code length
-		var h; // table level
-		var i; // counter, current code
-		var j; // counter
-		var k; // number of bits in current code
-		var lx = [];
-		var p; // pointer into c[], b[], or v[]
-		var pidx; // index of p
-		var q; // (HuftNode) points to current table
-		var r = new HuftNode(); // table entry for structure assignment
-		var u = [];
-		var v = [];
-		var w;
-		var x = [];
-		var xp; // pointer into x or c
-		var y; // number of dummy codes added
-		var z; // number of entries in current table
-		var o;
-		var tail; // (HuftList)
-
-		tail = this.root = null;
-
-		// bit length count table
-		for (i = 0; i < this.BMAX + 1; i++) {
-			c[i] = 0;
-		}
-		// stack of bits per table
-		for (i = 0; i < this.BMAX + 1; i++) {
-			lx[i] = 0;
-		}
-		// HuftNode[BMAX][]  table stack
-		for (i = 0; i < this.BMAX; i++) {
-			u[i] = null;
-		}
-		// values in order of bit length
-		for (i = 0; i < this.N_MAX; i++) {
-			v[i] = 0;
-		}
-		// bit offsets, then code stack
-		for (i = 0; i < this.BMAX + 1; i++) {
-			x[i] = 0;
-		}
-
-		// Generate counts for each bit length
-		el = n > 256 ? b[256] : this.BMAX; // set length of EOB code, if any
-		p = b; pidx = 0;
-		i = n;
-		do {
-			c[p[pidx]]++; // assume all entries <= BMAX
-			pidx++;
-		} while (--i > 0);
-		if (c[0] === n) { // null input--all zero length codes
-			this.root = null;
-			this.m = 0;
-			this.status = 0;
-			return;
-		}
-
-		// Find minimum and maximum length, bound *m by those
-		for (j = 1; j <= this.BMAX; j++) {
-			if (c[j] !== 0) {
-				break;
-			}
-		}
-		k = j; // minimum code length
-		if (mm < j) {
-			mm = j;
-		}
-		for (i = this.BMAX; i !== 0; i--) {
-			if (c[i] !== 0) {
-				break;
-			}
-		}
-		g = i; // maximum code length
-		if (mm > i) {
-			mm = i;
-		}
-
-		// Adjust last length count to fill out codes, if needed
-		for (y = 1 << j; j < i; j++, y <<= 1) {
-			if ((y -= c[j]) < 0) {
-				this.status = 2; // bad input: more codes than bits
-				this.m = mm;
-				return;
-			}
-		}
-		if ((y -= c[i]) < 0) {
-			this.status = 2;
-			this.m = mm;
-			return;
-		}
-		c[i] += y;
-
-		// Generate starting offsets into the value table for each length
-		x[1] = j = 0;
-		p = c;
-		pidx = 1;
-		xp = 2;
-		while (--i > 0) { // note that i == g from above
-			x[xp++] = (j += p[pidx++]);
-		}
-
-		// Make a table of values in order of bit lengths
-		p = b; pidx = 0;
-		i = 0;
-		do {
-			if ((j = p[pidx++]) !== 0) {
-				v[x[j]++] = i;
-			}
-		} while (++i < n);
-		n = x[g]; // set n to length of v
-
-		// Generate the Huffman codes and for each, make the table entries
-		x[0] = i = 0; // first Huffman code is zero
-		p = v; pidx = 0; // grab values in bit order
-		h = -1; // no tables yet--level -1
-		w = lx[0] = 0; // no bits decoded yet
-		q = null; // ditto
-		z = 0; // ditto
-
-		// go through the bit lengths (k already is bits in shortest code)
-		for (null; k <= g; k++) {
-			a = c[k];
-			while (a-- > 0) {
-				// here i is the Huffman code of length k bits for value p[pidx]
-				// make tables up to required level
-				while (k > w + lx[1 + h]) {
-					w += lx[1 + h]; // add bits already decoded
-					h++;
-
-					// compute minimum size table less than or equal to *m bits
-					z = (z = g - w) > mm ? mm : z; // upper limit
-					if ((f = 1 << (j = k - w)) > a + 1) { // try a k-w bit table
-						// too few codes for k-w bit table
-						f -= a + 1; // deduct codes from patterns left
-						xp = k;
-						while (++j < z) { // try smaller tables up to z bits
-							if ((f <<= 1) <= c[++xp]) {
-								break; // enough codes to use up j bits
-							}
-							f -= c[xp]; // else deduct codes from patterns
-						}
-					}
-					if (w + j > el && w < el) {
-						j = el - w; // make EOB code end at table
-					}
-					z = 1 << j; // table entries for j-bit table
-					lx[1 + h] = j; // set table size in stack
-
-					// allocate and link in new table
-					q = [];
-					for (o = 0; o < z; o++) {
-						q[o] = new HuftNode();
-					}
-
-					if (!tail) {
-						tail = this.root = new HuftList();
-					} else {
-						tail = tail.next = new HuftList();
-					}
-					tail.next = null;
-					tail.list = q;
-					u[h] = q; // table starts after link
-
-					/* connect to last table, if there is one */
-					if (h > 0) {
-						x[h] = i; // save pattern for backing up
-						r.b = lx[h]; // bits to dump before this table
-						r.e = 16 + j; // bits in this table
-						r.t = q; // pointer to this table
-						j = (i & ((1 << w) - 1)) >> (w - lx[h]);
-						u[h - 1][j].e = r.e;
-						u[h - 1][j].b = r.b;
-						u[h - 1][j].n = r.n;
-						u[h - 1][j].t = r.t;
-					}
-				}
-
-				// set up table entry in r
-				r.b = k - w;
-				if (pidx >= n) {
-					r.e = 99; // out of values--invalid code
-				} else if (p[pidx] < s) {
-					r.e = (p[pidx] < 256 ? 16 : 15); // 256 is end-of-block code
-					r.n = p[pidx++]; // simple code is just the value
-				} else {
-					r.e = e[p[pidx] - s]; // non-simple--look up in lists
-					r.n = d[p[pidx++] - s];
-				}
-
-				// fill code-like entries with r //
-				f = 1 << (k - w);
-				for (j = i >> w; j < z; j += f) {
-					q[j].e = r.e;
-					q[j].b = r.b;
-					q[j].n = r.n;
-					q[j].t = r.t;
-				}
-
-				// backwards increment the k-bit code i
-				for (j = 1 << (k - 1); (i & j) !== 0; j >>= 1) {
-					i ^= j;
-				}
-				i ^= j;
-
-				// backup over finished tables
-				while ((i & ((1 << w) - 1)) !== x[h]) {
-					w -= lx[h]; // don't need to update q
-					h--;
-				}
-			}
-		}
-
-		/* return actual size of base table */
-		this.m = lx[1];
-
-		/* Return true (1) if we were given an incomplete table */
-		this.status = ((y !== 0 && g !== 1) ? 1 : 0);
-	}
-
-
-	/* routines (inflate) */
-
-	function GET_BYTE() {
-		if (inflate_data.length === inflate_pos) {
-			return -1;
-		}
-		return inflate_data[inflate_pos++] & 0xff;
-	}
-
-	function NEEDBITS(n) {
-		while (bit_len < n) {
-			bit_buf |= GET_BYTE() << bit_len;
-			bit_len += 8;
-		}
-	}
-
-	function GETBITS(n) {
-		return bit_buf & MASK_BITS[n];
-	}
-
-	function DUMPBITS(n) {
-		bit_buf >>= n;
-		bit_len -= n;
-	}
-
-	function inflate_codes(buff, off, size) {
-		// inflate (decompress) the codes in a deflated (compressed) block.
-		// Return an error code or zero if it all goes ok.
-		var e; // table entry flag/number of extra bits
-		var t; // (HuftNode) pointer to table entry
-		var n;
-
-		if (size === 0) {
-			return 0;
-		}
-
-		// inflate the coded data
-		n = 0;
-		for (;;) { // do until end of block
-			NEEDBITS(bl);
-			t = tl.list[GETBITS(bl)];
-			e = t.e;
-			while (e > 16) {
-				if (e === 99) {
-					return -1;
-				}
-				DUMPBITS(t.b);
-				e -= 16;
-				NEEDBITS(e);
-				t = t.t[GETBITS(e)];
-				e = t.e;
-			}
-			DUMPBITS(t.b);
-
-			if (e === 16) { // then it's a literal
-				wp &= WSIZE - 1;
-				buff[off + n++] = slide[wp++] = t.n;
-				if (n === size) {
-					return size;
-				}
-				continue;
-			}
-
-			// exit if end of block
-			if (e === 15) {
-				break;
-			}
-
-			// it's an EOB or a length
-
-			// get length of block to copy
-			NEEDBITS(e);
-			copy_leng = t.n + GETBITS(e);
-			DUMPBITS(e);
-
-			// decode distance of block to copy
-			NEEDBITS(bd);
-			t = td.list[GETBITS(bd)];
-			e = t.e;
-
-			while (e > 16) {
-				if (e === 99) {
-					return -1;
-				}
-				DUMPBITS(t.b);
-				e -= 16;
-				NEEDBITS(e);
-				t = t.t[GETBITS(e)];
-				e = t.e;
-			}
-			DUMPBITS(t.b);
-			NEEDBITS(e);
-			copy_dist = wp - t.n - GETBITS(e);
-			DUMPBITS(e);
-
-			// do the copy
-			while (copy_leng > 0 && n < size) {
-				copy_leng--;
-				copy_dist &= WSIZE - 1;
-				wp &= WSIZE - 1;
-				buff[off + n++] = slide[wp++] = slide[copy_dist++];
-			}
-
-			if (n === size) {
-				return size;
-			}
-		}
-
-		method = -1; // done
-		return n;
-	}
-
-	function inflate_stored(buff, off, size) {
-		/* "decompress" an inflated type 0 (stored) block. */
-		var n;
-
-		// go to byte boundary
-		n = bit_len & 7;
-		DUMPBITS(n);
-
-		// get the length and its complement
-		NEEDBITS(16);
-		n = GETBITS(16);
-		DUMPBITS(16);
-		NEEDBITS(16);
-		if (n !== ((~bit_buf) & 0xffff)) {
-			return -1; // error in compressed data
-		}
-		DUMPBITS(16);
-
-		// read and output the compressed data
-		copy_leng = n;
-
-		n = 0;
-		while (copy_leng > 0 && n < size) {
-			copy_leng--;
-			wp &= WSIZE - 1;
-			NEEDBITS(8);
-			buff[off + n++] = slide[wp++] = GETBITS(8);
-			DUMPBITS(8);
-		}
-
-		if (copy_leng === 0) {
-			method = -1; // done
-		}
-		return n;
-	}
-
-	function inflate_fixed(buff, off, size) {
-		// decompress an inflated type 1 (fixed Huffman codes) block.  We should
-		// either replace this with a custom decoder, or at least precompute the
-		// Huffman tables.
-
-		// if first time, set up tables for fixed blocks
-		if (!fixed_tl) {
-			var i; // temporary variable
-			var l = []; // 288 length list for huft_build (initialized below)
-			var h; // HuftBuild
-
-			// literal table
-			for (i = 0; i < 144; i++) {
-				l[i] = 8;
-			}
-			for (null; i < 256; i++) {
-				l[i] = 9;
-			}
-			for (null; i < 280; i++) {
-				l[i] = 7;
-			}
-			for (null; i < 288; i++) { // make a complete, but wrong code set
-				l[i] = 8;
-			}
-			fixed_bl = 7;
-
-			h = new HuftBuild(l, 288, 257, cplens, cplext, fixed_bl);
-			if (h.status !== 0) {
-				console.error("HufBuild error: " + h.status);
-				return -1;
-			}
-			fixed_tl = h.root;
-			fixed_bl = h.m;
-
-			// distance table
-			for (i = 0; i < 30; i++) { // make an incomplete code set
-				l[i] = 5;
-			}
-			fixed_bd = 5;
-
-			h = new HuftBuild(l, 30, 0, cpdist, cpdext, fixed_bd);
-			if (h.status > 1) {
-				fixed_tl = null;
-				console.error("HufBuild error: " + h.status);
-				return -1;
-			}
-			fixed_td = h.root;
-			fixed_bd = h.m;
-		}
-
-		tl = fixed_tl;
-		td = fixed_td;
-		bl = fixed_bl;
-		bd = fixed_bd;
-		return inflate_codes(buff, off, size);
-	}
-
-	function inflate_dynamic(buff, off, size) {
-		// decompress an inflated type 2 (dynamic Huffman codes) block.
-		var i; // temporary variables
-		var j;
-		var l; // last length
-		var n; // number of lengths to get
-		var t; // (HuftNode) literal/length code table
-		var nb; // number of bit length codes
-		var nl; // number of literal/length codes
-		var nd; // number of distance codes
-		var ll = [];
-		var h; // (HuftBuild)
-
-		// literal/length and distance code lengths
-		for (i = 0; i < 286 + 30; i++) {
-			ll[i] = 0;
-		}
-
-		// read in table lengths
-		NEEDBITS(5);
-		nl = 257 + GETBITS(5); // number of literal/length codes
-		DUMPBITS(5);
-		NEEDBITS(5);
-		nd = 1 + GETBITS(5); // number of distance codes
-		DUMPBITS(5);
-		NEEDBITS(4);
-		nb = 4 + GETBITS(4); // number of bit length codes
-		DUMPBITS(4);
-		if (nl > 286 || nd > 30) {
-			return -1; // bad lengths
-		}
-
-		// read in bit-length-code lengths
-		for (j = 0; j < nb; j++) {
-			NEEDBITS(3);
-			ll[border[j]] = GETBITS(3);
-			DUMPBITS(3);
-		}
-		for (null; j < 19; j++) {
-			ll[border[j]] = 0;
-		}
-
-		// build decoding table for trees--single level, 7 bit lookup
-		bl = 7;
-		h = new HuftBuild(ll, 19, 19, null, null, bl);
-		if (h.status !== 0) {
-			return -1; // incomplete code set
-		}
-
-		tl = h.root;
-		bl = h.m;
-
-		// read in literal and distance code lengths
-		n = nl + nd;
-		i = l = 0;
-		while (i < n) {
-			NEEDBITS(bl);
-			t = tl.list[GETBITS(bl)];
-			j = t.b;
-			DUMPBITS(j);
-			j = t.n;
-			if (j < 16) { // length of code in bits (0..15)
-				ll[i++] = l = j; // save last length in l
-			} else if (j === 16) { // repeat last length 3 to 6 times
-				NEEDBITS(2);
-				j = 3 + GETBITS(2);
-				DUMPBITS(2);
-				if (i + j > n) {
-					return -1;
-				}
-				while (j-- > 0) {
-					ll[i++] = l;
-				}
-			} else if (j === 17) { // 3 to 10 zero length codes
-				NEEDBITS(3);
-				j = 3 + GETBITS(3);
-				DUMPBITS(3);
-				if (i + j > n) {
-					return -1;
-				}
-				while (j-- > 0) {
-					ll[i++] = 0;
-				}
-				l = 0;
-			} else { // j === 18: 11 to 138 zero length codes
-				NEEDBITS(7);
-				j = 11 + GETBITS(7);
-				DUMPBITS(7);
-				if (i + j > n) {
-					return -1;
-				}
-				while (j-- > 0) {
-					ll[i++] = 0;
-				}
-				l = 0;
-			}
-		}
-
-		// build the decoding tables for literal/length and distance codes
-		bl = lbits;
-		h = new HuftBuild(ll, nl, 257, cplens, cplext, bl);
-		if (bl === 0) { // no literals or lengths
-			h.status = 1;
-		}
-		if (h.status !== 0) {
-			if (h.status !== 1) {
-				return -1; // incomplete code set
-			}
-			// **incomplete literal tree**
-		}
-		tl = h.root;
-		bl = h.m;
-
-		for (i = 0; i < nd; i++) {
-			ll[i] = ll[i + nl];
-		}
-		bd = dbits;
-		h = new HuftBuild(ll, nd, 0, cpdist, cpdext, bd);
-		td = h.root;
-		bd = h.m;
-
-		if (bd === 0 && nl > 257) { // lengths but no distances
-			// **incomplete distance tree**
-			return -1;
-		}
-/*
-		if (h.status === 1) {
-			// **incomplete distance tree**
-		}
-*/
-		if (h.status !== 0) {
-			return -1;
-		}
-
-		// decompress until an end-of-block code
-		return inflate_codes(buff, off, size);
-	}
-
-	function inflate_start() {
-		if (!slide) {
-			slide = []; // new Array(2 * WSIZE); // slide.length is never called
-		}
-		wp = 0;
-		bit_buf = 0;
-		bit_len = 0;
-		method = -1;
-		eof = false;
-		copy_leng = copy_dist = 0;
-		tl = null;
-	}
-
-	function inflate_internal(buff, off, size) {
-		// decompress an inflated entry
-		var n, i;
-
-		n = 0;
-		while (n < size) {
-			if (eof && method === -1) {
-				return n;
-			}
-
-			if (copy_leng > 0) {
-				if (method !== STORED_BLOCK) {
-					// STATIC_TREES or DYN_TREES
-					while (copy_leng > 0 && n < size) {
-						copy_leng--;
-						copy_dist &= WSIZE - 1;
-						wp &= WSIZE - 1;
-						buff[off + n++] = slide[wp++] = slide[copy_dist++];
-					}
-				} else {
-					while (copy_leng > 0 && n < size) {
-						copy_leng--;
-						wp &= WSIZE - 1;
-						NEEDBITS(8);
-						buff[off + n++] = slide[wp++] = GETBITS(8);
-						DUMPBITS(8);
-					}
-					if (copy_leng === 0) {
-						method = -1; // done
-					}
-				}
-				if (n === size) {
-					return n;
-				}
-			}
-
-			if (method === -1) {
-				if (eof) {
-					break;
-				}
-
-				// read in last block bit
-				NEEDBITS(1);
-				if (GETBITS(1) !== 0) {
-					eof = true;
-				}
-				DUMPBITS(1);
-
-				// read in block type
-				NEEDBITS(2);
-				method = GETBITS(2);
-				DUMPBITS(2);
-				tl = null;
-				copy_leng = 0;
-			}
-
-			switch (method) {
-			case STORED_BLOCK:
-				i = inflate_stored(buff, off + n, size - n);
-				break;
-
-			case STATIC_TREES:
-				if (tl) {
-					i = inflate_codes(buff, off + n, size - n);
-				} else {
-					i = inflate_fixed(buff, off + n, size - n);
-				}
-				break;
-
-			case DYN_TREES:
-				if (tl) {
-					i = inflate_codes(buff, off + n, size - n);
-				} else {
-					i = inflate_dynamic(buff, off + n, size - n);
-				}
-				break;
-
-			default: // error
-				i = -1;
-				break;
-			}
-
-			if (i === -1) {
-				if (eof) {
-					return 0;
-				}
-				return -1;
-			}
-			n += i;
-		}
-		return n;
-	}
-
-	function inflate(arr) {
-		var buff = [], i;
-
-		inflate_start();
-		inflate_data = arr;
-		inflate_pos = 0;
-
-		do {
-			i = inflate_internal(buff, buff.length, 1024);
-		} while (i > 0);
-		inflate_data = null; // G.C.
-		return buff;
-	}
-
-	module.exports = inflate;
-}());
-
-},{}],48:[function(require,module,exports){
-(function (Buffer){
-// Copyright (c) 2012 Kuba Niegowski
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
-
-'use strict';
-
-
-var util = require('util'),
-    Stream = require('stream');
-
-
-var ChunkStream = module.exports = function() {
-    Stream.call(this);
-
-    this._buffers = [];
-    this._buffered = 0;
-
-    this._reads = [];
-    this._paused = false;
-
-    this._encoding = 'utf8';
-    this.writable = true;
-};
-util.inherits(ChunkStream, Stream);
-
-
-ChunkStream.prototype.read = function(length, callback) {
-
-    this._reads.push({
-        length: Math.abs(length),  // if length < 0 then at most this length
-        allowLess: length < 0,
-        func: callback
-    });
-
-    this._process();
-
-    // its paused and there is not enought data then ask for more
-    if (this._paused && this._reads.length > 0) {
-        this._paused = false;
-
-        this.emit('drain');
-    }
-};
-
-ChunkStream.prototype.write = function(data, encoding) {
-
-    if (!this.writable) {
-        this.emit('error', new Error('Stream not writable'));
-        return false;
-    }
-
-    if (!Buffer.isBuffer(data))
-        data = new Buffer(data, encoding || this._encoding);
-
-    this._buffers.push(data);
-    this._buffered += data.length;
-
-    this._process();
-
-    // ok if there are no more read requests
-    if (this._reads && this._reads.length == 0)
-        this._paused = true;
-
-    return this.writable && !this._paused;
-};
-
-ChunkStream.prototype.end = function(data, encoding) {
-
-    if (data) this.write(data, encoding);
-
-    this.writable = false;
-
-    // already destroyed
-    if (!this._buffers) return;
-
-    // enqueue or handle end
-    if (this._buffers.length == 0) {
-        this._end();
-    } else {
-        this._buffers.push(null);
-        this._process();
-    }
-};
-
-ChunkStream.prototype.destroySoon = ChunkStream.prototype.end;
-
-ChunkStream.prototype._end = function() {
-
-    if (this._reads.length > 0) {
-        this.emit('error',
-            new Error('There are some read requests waitng on finished stream')
-        );
-    }
-
-    this.destroy();
-};
-
-ChunkStream.prototype.destroy = function() {
-
-    if (!this._buffers) return;
-
-    this.writable = false;
-    this._reads = null;
-    this._buffers = null;
-
-    this.emit('close');
-};
-
-ChunkStream.prototype._process = function() {
-
-    // as long as there is any data and read requests
-    while (this._buffered > 0 && this._reads && this._reads.length > 0) {
-
-        var read = this._reads[0];
-
-        // read any data (but no more than length)
-        if (read.allowLess) {
-
-            // ok there is any data so that we can satisfy this request
-            this._reads.shift(); // == read
-
-            // first we need to peek into first buffer
-            var buf = this._buffers[0];
-
-            // ok there is more data than we need
-            if (buf.length > read.length) {
-
-                this._buffered -= read.length;
-                this._buffers[0] = buf.slice(read.length);
-
-                read.func.call(this, buf.slice(0, read.length));
-
-            } else {
-                // ok this is less than maximum length so use it all
-                this._buffered -= buf.length;
-                this._buffers.shift(); // == buf
-
-                read.func.call(this, buf);
-            }
-
-        } else if (this._buffered >= read.length) {
-            // ok we can meet some expectations
-
-            this._reads.shift(); // == read
-
-            var pos = 0,
-                count = 0,
-                data = new Buffer(read.length);
-
-            // create buffer for all data
-            while (pos < read.length) {
-
-                var buf = this._buffers[count++],
-                    len = Math.min(buf.length, read.length - pos);
-
-                buf.copy(data, pos, 0, len);
-                pos += len;
-
-                // last buffer wasn't used all so just slice it and leave
-                if (len != buf.length)
-                    this._buffers[--count] = buf.slice(len);
-            }
-
-            // remove all used buffers
-            if (count > 0)
-                this._buffers.splice(0, count);
-
-            this._buffered -= read.length;
-
-            read.func.call(this, data);
-
-        } else {
-            // not enought data to satisfy first request in queue
-            // so we need to wait for more
-            break;
-        }
-    }
-
-    if (this._buffers && this._buffers.length > 0 && this._buffers[0] == null) {
-        this._end();
-    }
-};
-
-}).call(this,require("buffer").Buffer)
-},{"buffer":73,"stream":96,"util":99}],49:[function(require,module,exports){
-// Copyright (c) 2012 Kuba Niegowski
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
-
-'use strict';
-
-
-module.exports = {
-
-    PNG_SIGNATURE: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
-
-    TYPE_IHDR: 0x49484452,
-    TYPE_IEND: 0x49454e44,
-    TYPE_IDAT: 0x49444154,
-    TYPE_PLTE: 0x504c5445,
-    TYPE_tRNS: 0x74524e53,
-    TYPE_gAMA: 0x67414d41,
-
-    COLOR_PALETTE: 1,
-    COLOR_COLOR: 2,
-    COLOR_ALPHA: 4
-};
-
-},{}],50:[function(require,module,exports){
-// Copyright (c) 2012 Kuba Niegowski
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
-
-'use strict';
-
-var util = require('util'),
-    Stream = require('stream');
-
-
-var CrcStream = module.exports = function() {
-    Stream.call(this);
-
-    this._crc = -1;
-
-    this.writable = true;
-};
-util.inherits(CrcStream, Stream);
-
-
-CrcStream.prototype.write = function(data) {
-
-    for (var i = 0; i < data.length; i++) {
-        this._crc = crcTable[(this._crc ^ data[i]) & 0xff] ^ (this._crc >>> 8);
-    }
-    return true;
-};
-
-CrcStream.prototype.end = function(data) {
-    if (data) this.write(data);
-
-    this.emit('crc', this.crc32());
-};
-
-CrcStream.prototype.crc32 = function() {
-    return this._crc ^ -1;
-};
-
-
-CrcStream.crc32 = function(buf) {
-
-    var crc = -1;
-    for (var i = 0; i < buf.length; i++) {
-        crc = crcTable[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8);
-    }
-    return crc ^ -1;
-};
-
-
-
-var crcTable = [];
-
-for (var i = 0; i < 256; i++) {
-    var c = i;
-    for (var j = 0; j < 8; j++) {
-        if (c & 1) {
-            c = 0xedb88320 ^ (c >>> 1);
-        } else {
-            c = c >>> 1;
-        }
-    }
-    crcTable[i] = c;
-}
-
-},{"stream":96,"util":99}],51:[function(require,module,exports){
-(function (Buffer){
-// Copyright (c) 2012 Kuba Niegowski
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
-
-'use strict';
-
-var util = require('util'),
-    zlib = require('zlib'),
-    ChunkStream = require('./chunkstream');
-
-
-var Filter = module.exports = function(width, height, Bpp, data, options) {
-    ChunkStream.call(this);
-
-    this._width = width;
-    this._height = height;
-    this._Bpp = Bpp;
-    this._data = data;
-    this._options = options;
-
-    this._line = 0;
-
-    if (!('filterType' in options) || options.filterType == -1) {
-        options.filterType = [0, 1, 2, 3, 4];
-    } else if (typeof options.filterType == 'number') {
-        options.filterType = [options.filterType];
-    }
-
-    this._filters = {
-        0: this._filterNone.bind(this),
-        1: this._filterSub.bind(this),
-        2: this._filterUp.bind(this),
-        3: this._filterAvg.bind(this),
-        4: this._filterPaeth.bind(this)
-    };
-
-    this.read(this._width * Bpp + 1, this._reverseFilterLine.bind(this));
-};
-util.inherits(Filter, ChunkStream);
-
-
-var pixelBppMap = {
-    1: { // L
-        0: 0,
-        1: 0,
-        2: 0,
-        3: 0xff
-    },
-    2: { // LA
-        0: 0,
-        1: 0,
-        2: 0,
-        3: 1
-    },
-    3: { // RGB
-        0: 0,
-        1: 1,
-        2: 2,
-        3: 0xff
-    },
-    4: { // RGBA
-        0: 0,
-        1: 1,
-        2: 2,
-        3: 3
-    }
-};
-
-Filter.prototype._reverseFilterLine = function(rawData) {
-
-    var pxData = this._data,
-        pxLineLength = this._width << 2,
-        pxRowPos = this._line * pxLineLength,
-        filter = rawData[0];
-
-    if (filter == 0) {
-        for (var x = 0; x < this._width; x++) {
-            var pxPos = pxRowPos + (x << 2),
-                rawPos = 1 + x * this._Bpp;
-
-            for (var i = 0; i < 4; i++) {
-                var idx = pixelBppMap[this._Bpp][i];
-                pxData[pxPos + i] = idx != 0xff ? rawData[rawPos + idx] : 0xff;
-            }
-        }
-
-    } else if (filter == 1) {
-        for (var x = 0; x < this._width; x++) {
-            var pxPos = pxRowPos + (x << 2),
-                rawPos = 1 + x * this._Bpp;
-
-            for (var i = 0; i < 4; i++) {
-                var idx = pixelBppMap[this._Bpp][i],
-                    left = x > 0 ? pxData[pxPos + i - 4] : 0;
-
-                pxData[pxPos + i] = idx != 0xff ? rawData[rawPos + idx] + left : 0xff;
-            }
-        }
-
-    } else if (filter == 2) {
-        for (var x = 0; x < this._width; x++) {
-            var pxPos = pxRowPos + (x << 2),
-                rawPos = 1 + x * this._Bpp;
-
-            for (var i = 0; i < 4; i++) {
-                var idx = pixelBppMap[this._Bpp][i],
-                    up = this._line > 0 ? pxData[pxPos - pxLineLength + i] : 0;
-
-                pxData[pxPos + i] = idx != 0xff ? rawData[rawPos + idx] + up : 0xff;
-            }
-
-        }
-
-    } else if (filter == 3) {
-        for (var x = 0; x < this._width; x++) {
-            var pxPos = pxRowPos + (x << 2),
-                rawPos = 1 + x * this._Bpp;
-
-            for (var i = 0; i < 4; i++) {
-                var idx = pixelBppMap[this._Bpp][i],
-                    left = x > 0 ? pxData[pxPos + i - 4] : 0,
-                    up = this._line > 0 ? pxData[pxPos - pxLineLength + i] : 0,
-                    add = Math.floor((left + up) / 2);
-
-                 pxData[pxPos + i] = idx != 0xff ? rawData[rawPos + idx] + add : 0xff;
-            }
-
-        }
-
-    } else if (filter == 4) {
-        for (var x = 0; x < this._width; x++) {
-            var pxPos = pxRowPos + (x << 2),
-                rawPos = 1 + x * this._Bpp;
-
-            for (var i = 0; i < 4; i++) {
-                var idx = pixelBppMap[this._Bpp][i],
-                    left = x > 0 ? pxData[pxPos + i - 4] : 0,
-                    up = this._line > 0 ? pxData[pxPos - pxLineLength + i] : 0,
-                    upLeft = x > 0 && this._line > 0
-                            ? pxData[pxPos - pxLineLength + i - 4] : 0,
-                    add = PaethPredictor(left, up, upLeft);
-
-                pxData[pxPos + i] = idx != 0xff ? rawData[rawPos + idx] + add : 0xff;
-            }
-        }
-    }
-
-
-    this._line++;
-
-    if (this._line < this._height)
-        this.read(this._width * this._Bpp + 1, this._reverseFilterLine.bind(this));
-    else
-        this.emit('complete', this._data, this._width, this._height);
-};
-
-
-
-
-Filter.prototype.filter = function() {
-
-    var pxData = this._data,
-        rawData = new Buffer(((this._width << 2) + 1) * this._height);
-
-    for (var y = 0; y < this._height; y++) {
-
-        // find best filter for this line (with lowest sum of values)
-        var filterTypes = this._options.filterType,
-            min = Infinity,
-            sel = 0;
-
-        for (var i = 0; i < filterTypes.length; i++) {
-            var sum = this._filters[filterTypes[i]](pxData, y, null);
-            if (sum < min) {
-                sel = filterTypes[i];
-                min = sum;
-            }
-        }
-
-        this._filters[sel](pxData, y, rawData);
-    }
-    return rawData;
-};
-
-Filter.prototype._filterNone = function(pxData, y, rawData) {
-
-    var pxRowLength = this._width << 2,
-        rawRowLength = pxRowLength + 1,
-        sum = 0;
-
-    if (!rawData) {
-        for (var x = 0; x < pxRowLength; x++)
-            sum += Math.abs(pxData[y * pxRowLength + x]);
-
-    } else {
-        rawData[y * rawRowLength] = 0;
-        pxData.copy(rawData, rawRowLength * y + 1, pxRowLength * y, pxRowLength * (y + 1));
-    }
-
-    return sum;
-};
-
-Filter.prototype._filterSub = function(pxData, y, rawData) {
-
-    var pxRowLength = this._width << 2,
-        rawRowLength = pxRowLength + 1,
-        sum = 0;
-
-    if (rawData)
-        rawData[y * rawRowLength] = 1;
-
-    for (var x = 0; x < pxRowLength; x++) {
-
-        var left = x >= 4 ? pxData[y * pxRowLength + x - 4] : 0,
-            val = pxData[y * pxRowLength + x] - left;
-
-        if (!rawData) sum += Math.abs(val);
-        else rawData[y * rawRowLength + 1 + x] = val;
-    }
-    return sum;
-};
-
-Filter.prototype._filterUp = function(pxData, y, rawData) {
-
-    var pxRowLength = this._width << 2,
-        rawRowLength = pxRowLength + 1,
-        sum = 0;
-
-    if (rawData)
-        rawData[y * rawRowLength] = 2;
-
-    for (var x = 0; x < pxRowLength; x++) {
-
-        var up = y > 0 ? pxData[(y - 1) * pxRowLength + x] : 0,
-            val = pxData[y * pxRowLength + x] - up;
-
-        if (!rawData) sum += Math.abs(val);
-        else rawData[y * rawRowLength + 1 + x] = val;
-    }
-    return sum;
-};
-
-Filter.prototype._filterAvg = function(pxData, y, rawData) {
-
-    var pxRowLength = this._width << 2,
-        rawRowLength = pxRowLength + 1,
-        sum = 0;
-
-    if (rawData)
-        rawData[y * rawRowLength] = 3;
-
-    for (var x = 0; x < pxRowLength; x++) {
-
-        var left = x >= 4 ? pxData[y * pxRowLength + x - 4] : 0,
-            up = y > 0 ? pxData[(y - 1) * pxRowLength + x] : 0,
-            val = pxData[y * pxRowLength + x] - ((left + up) >> 1);
-
-        if (!rawData) sum += Math.abs(val);
-        else rawData[y * rawRowLength + 1 + x] = val;
-    }
-    return sum;
-};
-
-Filter.prototype._filterPaeth = function(pxData, y, rawData) {
-
-    var pxRowLength = this._width << 2,
-        rawRowLength = pxRowLength + 1,
-        sum = 0;
-
-    if (rawData)
-        rawData[y * rawRowLength] = 4;
-
-    for (var x = 0; x < pxRowLength; x++) {
-
-        var left = x >= 4 ? pxData[y * pxRowLength + x - 4] : 0,
-            up = y > 0 ? pxData[(y - 1) * pxRowLength + x] : 0,
-            upLeft = x >= 4 && y > 0 ? pxData[(y - 1) * pxRowLength + x - 4] : 0,
-            val = pxData[y * pxRowLength + x] - PaethPredictor(left, up, upLeft);
-
-        if (!rawData) sum += Math.abs(val);
-        else rawData[y * rawRowLength + 1 + x] = val;
-    }
-    return sum;
-};
-
-
-
-var PaethPredictor = function(left, above, upLeft) {
-
-    var p = left + above - upLeft,
-        pLeft = Math.abs(p - left),
-        pAbove = Math.abs(p - above),
-        pUpLeft = Math.abs(p - upLeft);
-
-    if (pLeft <= pAbove && pLeft <= pUpLeft) return left;
-    else if (pAbove <= pUpLeft) return above;
-    else return upLeft;
-};
-
-}).call(this,require("buffer").Buffer)
-},{"./chunkstream":48,"buffer":73,"util":99,"zlib":72}],52:[function(require,module,exports){
-// Copyright (c) 2012 Kuba Niegowski
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
-
-'use strict';
-
-
-var util = require('util'),
-    Stream = require('stream'),
-    zlib = require('zlib'),
-    Filter = require('./filter'),
-    CrcStream = require('./crc'),
-    constants = require('./constants');
-
-var bops = require('bops')
-var deflatejs = require('deflate-js')
-
-var Packer = module.exports = function(options) {
-    Stream.call(this);
-
-    this._options = options;
-
-    options.deflateChunkSize = options.deflateChunkSize || 32 * 1024;
-    options.deflateLevel = options.deflateLevel || 9;
-    options.deflateStrategy = options.deflateStrategy || 3;
-
-    this.readable = true;
-};
-util.inherits(Packer, Stream);
-
-
-Packer.prototype.pack = function(data, width, height) {
-
-    // Signature
-    this.emit('data', bops.from(constants.PNG_SIGNATURE));
-    this.emit('data', this._packIHDR(width, height));
-
-    // filter pixel data
-    var filter = new Filter(width, height, 4, data, this._options);
-    var data = filter.filter();
-
-    // compress it
-    var deflated = deflatejs.deflate(data, this._options.deflateLevel)
-    console.log('deflated!')
-    this.emit('data', this._packIDAT(deflated))
-    this.emit('data', this._packIEND());
-    this.emit('end');
-};
-
-Packer.prototype._packChunk = function(type, data) {
-
-    var len = (data ? data.length : 0),
-        buf = bops.create(len + 12);
-
-    bops.writeUInt32BE(buf, len, 0);
-    bops.writeUInt32BE(buf, type, 4);
-
-    if (data) bops.copy(data, buf, 8);
-
-    bops.writeInt32BE(buf, CrcStream.crc32(bops.subarray(buf, 4, buf.length - 4)), buf.length - 4);
-    return buf;
-};
-
-Packer.prototype._packIHDR = function(width, height) {
-
-    var buf = bops.create(13);
-    bops.writeUInt32BE(buf, width, 0);
-    bops.writeUInt32BE(buf, height, 4);
-    buf[8] = 8;
-    buf[9] = 6; // colorType
-    buf[10] = 0; // compression
-    buf[11] = 0; // filter
-    buf[12] = 0; // interlace
-
-    return this._packChunk(constants.TYPE_IHDR, buf);
-};
-
-Packer.prototype._packIDAT = function(data) {
-    return this._packChunk(constants.TYPE_IDAT, data);
-};
-
-Packer.prototype._packIEND = function() {
-    return this._packChunk(constants.TYPE_IEND, null);
-};
-
-},{"./constants":49,"./crc":50,"./filter":51,"bops":32,"deflate-js":45,"stream":96,"util":99,"zlib":72}],53:[function(require,module,exports){
-(function (Buffer){
-// Copyright (c) 2012 Kuba Niegowski
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
-
-'use strict';
-
-
-var util = require('util'),
-    zlib = require('zlib'),
-    CrcStream = require('./crc'),
-    ChunkStream = require('./chunkstream'),
-    constants = require('./constants'),
-    Filter = require('./filter');
-
-
-var Parser = module.exports = function(options) {
-    ChunkStream.call(this);
-
-    this._options = options;
-    options.checkCRC = options.checkCRC !== false;
-
-    this._hasIHDR = false;
-    this._hasIEND = false;
-
-    this._inflate = null;
-    this._filter = null;
-    this._crc = null;
-
-    // input flags/metadata
-    this._palette = [];
-    this._colorType = 0;
-
-    this._chunks = {};
-    this._chunks[constants.TYPE_IHDR] = this._handleIHDR.bind(this);
-    this._chunks[constants.TYPE_IEND] = this._handleIEND.bind(this);
-    this._chunks[constants.TYPE_IDAT] = this._handleIDAT.bind(this);
-    this._chunks[constants.TYPE_PLTE] = this._handlePLTE.bind(this);
-    this._chunks[constants.TYPE_tRNS] = this._handleTRNS.bind(this);
-    this._chunks[constants.TYPE_gAMA] = this._handleGAMA.bind(this);
-
-    this.writable = true;
-
-    this.on('error', this._handleError.bind(this));
-    this._handleSignature();
-};
-util.inherits(Parser, ChunkStream);
-
-
-Parser.prototype._handleError = function() {
-
-    this.writable = false;
-
-    this.destroy();
-
-    if (this._inflate)
-        this._inflate.destroy();
-};
-
-Parser.prototype._handleSignature = function() {
-    this.read(constants.PNG_SIGNATURE.length,
-        this._parseSignature.bind(this)
-    );
-};
-
-Parser.prototype._parseSignature = function(data) {
-
-    var signature = constants.PNG_SIGNATURE;
-
-    for (var i = 0; i < signature.length; i++) {
-        if (data[i] != signature[i]) {
-            this.emit('error', new Error('Invalid file signature'));
-            return;
-        }
-    }
-    this.read(8, this._parseChunkBegin.bind(this));
-};
-
-Parser.prototype._parseChunkBegin = function(data) {
-
-    // chunk content length
-    var length = data.readUInt32BE(0);
-
-    // chunk type
-    var type = data.readUInt32BE(4),
-        name = '';
-    for (var i = 4; i < 8; i++)
-        name += String.fromCharCode(data[i]);
-
-    // console.log('chunk ', name, length);
-
-    // chunk flags
-    var ancillary  = !!(data[4] & 0x20),  // or critical
-        priv       = !!(data[5] & 0x20),  // or public
-        safeToCopy = !!(data[7] & 0x20);  // or unsafe
-
-    if (!this._hasIHDR && type != constants.TYPE_IHDR) {
-        this.emit('error', new Error('Expected IHDR on beggining'));
-        return;
-    }
-
-    this._crc = new CrcStream();
-    this._crc.write(new Buffer(name));
-
-    if (this._chunks[type]) {
-        return this._chunks[type](length);
-
-    } else if (!ancillary) {
-        this.emit('error', new Error('Unsupported critical chunk type ' + name));
-        return;
-    } else {
-        this.read(length + 4, this._skipChunk.bind(this));
-    }
-};
-
-Parser.prototype._skipChunk = function(data) {
-    this.read(8, this._parseChunkBegin.bind(this));
-};
-
-Parser.prototype._handleChunkEnd = function() {
-    this.read(4, this._parseChunkEnd.bind(this));
-};
-
-Parser.prototype._parseChunkEnd = function(data) {
-
-    var fileCrc = data.readInt32BE(0),
-        calcCrc = this._crc.crc32();
-
-    // check CRC
-    if (this._options.checkCRC && calcCrc != fileCrc) {
-        this.emit('error', new Error('Crc error'));
-        return;
-    }
-
-    if (this._hasIEND) {
-        this.destroySoon();
-
-    } else {
-        this.read(8, this._parseChunkBegin.bind(this));
-    }
-};
-
-
-Parser.prototype._handleIHDR = function(length) {
-    this.read(length, this._parseIHDR.bind(this));
-};
-Parser.prototype._parseIHDR = function(data) {
-
-    this._crc.write(data);
-
-    var width = data.readUInt32BE(0),
-        height = data.readUInt32BE(4),
-        depth = data[8],
-        colorType = data[9], // bits: 1 palette, 2 color, 4 alpha
-        compr = data[10],
-        filter = data[11],
-        interlace = data[12];
-
-    // console.log('    width', width, 'height', height,
-    //     'depth', depth, 'colorType', colorType,
-    //     'compr', compr, 'filter', filter, 'interlace', interlace
-    // );
-
-    if (depth != 8) {
-        this.emit('error', new Error('Unsupported bit depth ' + depth));
-        return;
-    }
-    if (!(colorType in colorTypeToBppMap)) {
-        this.emit('error', new Error('Unsupported color type'));
-        return;
-    }
-    if (compr != 0) {
-        this.emit('error', new Error('Unsupported compression method'));
-        return;
-    }
-    if (filter != 0) {
-        this.emit('error', new Error('Unsupported filter method'));
-        return;
-    }
-    if (interlace != 0) {
-        this.emit('error', new Error('Unsupported interlace method'));
-        return;
-    }
-
-    this._colorType = colorType;
-
-    this._data = new Buffer(width * height * 4);
-    this._filter = new Filter(
-        width, height,
-        colorTypeToBppMap[this._colorType],
-        this._data,
-        this._options
-    );
-
-    this._hasIHDR = true;
-
-    this.emit('metadata', {
-        width: width,
-        height: height,
-        palette: !!(colorType & constants.COLOR_PALETTE),
-        color: !!(colorType & constants.COLOR_COLOR),
-        alpha: !!(colorType & constants.COLOR_ALPHA),
-        data: this._data
-    });
-
-    this._handleChunkEnd();
-};
-
-
-Parser.prototype._handlePLTE = function(length) {
-    this.read(length, this._parsePLTE.bind(this));
-};
-Parser.prototype._parsePLTE = function(data) {
-
-    this._crc.write(data);
-
-    var entries = Math.floor(data.length / 3);
-    // console.log('Palette:', entries);
-
-    for (var i = 0; i < entries; i++) {
-        this._palette.push([
-            data.readUInt8(i * 3),
-            data.readUInt8(i * 3 + 1),
-            data.readUInt8(i * 3 + 2 ),
-            0xff
-        ]);
-    }
-
-    this._handleChunkEnd();
-};
-
-Parser.prototype._handleTRNS = function(length) {
-    this.read(length, this._parseTRNS.bind(this));
-};
-Parser.prototype._parseTRNS = function(data) {
-
-    this._crc.write(data);
-
-    // palette
-    if (this._colorType == 3) {
-        if (this._palette.length == 0) {
-            this.emit('error', new Error('Transparency chunk must be after palette'));
-            return;
-        }
-        if (data.length > this._palette.length) {
-            this.emit('error', new Error('More transparent colors than palette size'));
-            return;
-        }
-        for (var i = 0; i < this._palette.length; i++) {
-            this._palette[i][3] = i < data.length ? data.readUInt8(i) : 0xff;
-        }
-    }
-
-    // for colorType 0 (grayscale) and 2 (rgb)
-    // there might be one gray/color defined as transparent
-
-    this._handleChunkEnd();
-};
-
-Parser.prototype._handleGAMA = function(length) {
-    this.read(length, this._parseGAMA.bind(this));
-};
-Parser.prototype._parseGAMA = function(data) {
-
-    this._crc.write(data);
-    this.emit('gamma', data.readUInt32BE(0) / 100000);
-
-    this._handleChunkEnd();
-};
-
-Parser.prototype._handleIDAT = function(length) {
-    this.read(-length, this._parseIDAT.bind(this, length));
-};
-Parser.prototype._parseIDAT = function(length, data) {
-
-    this._crc.write(data);
-
-    if (this._colorType == 3 && this._palette.length == 0)
-        throw new Error('Expected palette not found');
-
-    if (!this._inflate) {
-        this._inflate = zlib.createInflate();
-
-        this._inflate.on('error', this.emit.bind(this, 'error'));
-        this._filter.on('complete', this._reverseFiltered.bind(this));
-
-        this._inflate.pipe(this._filter);
-    }
-
-    this._inflate.write(data);
-    length -= data.length;
-
-    if (length > 0)
-        this._handleIDAT(length);
-    else
-        this._handleChunkEnd();
-};
-
-
-Parser.prototype._handleIEND = function(length) {
-    this.read(length, this._parseIEND.bind(this));
-};
-Parser.prototype._parseIEND = function(data) {
-
-    this._crc.write(data);
-
-    // no more data to inflate
-    this._inflate.end();
-
-    this._hasIEND = true;
-    this._handleChunkEnd();
-};
-
-
-var colorTypeToBppMap = {
-    0: 1,
-    2: 3,
-    3: 1,
-    4: 2,
-    6: 4
-};
-
-Parser.prototype._reverseFiltered = function(data, width, height) {
-
-    if (this._colorType == 3) { // paletted
-
-        // use values from palette
-        var pxLineLength = width << 2;
-
-        for (var y = 0; y < height; y++) {
-            var pxRowPos = y * pxLineLength;
-
-            for (var x = 0; x < width; x++) {
-                var pxPos = pxRowPos + (x << 2),
-                    color = this._palette[data[pxPos]];
-
-                for (var i = 0; i < 4; i++)
-                    data[pxPos + i] = color[i];
-            }
-        }
-    }
-
-    this.emit('parsed', data);
-};
-
-}).call(this,require("buffer").Buffer)
-},{"./chunkstream":48,"./constants":49,"./crc":50,"./filter":51,"buffer":73,"util":99,"zlib":72}],54:[function(require,module,exports){
-(function (process,Buffer){
-// Copyright (c) 2012 Kuba Niegowski
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
-
-'use strict';
-
-
-var util = require('util'),
-    Stream = require('stream'),
-    Parser = require('./parser'),
-    Packer = require('./packer');
-
-
-var PNG = exports.PNG = function(options) {
-    Stream.call(this);
-
-    options = options || {};
-
-    this.width = options.width || 0;
-    this.height = options.height || 0;
-
-    this.data = this.width > 0 && this.height > 0
-            ? new Buffer(4 * this.width * this.height) : null;
-
-    this.gamma = 0;
-    this.readable = this.writable = true;
-
-    this._parser = new Parser(options || {});
-
-    this._parser.on('error', this.emit.bind(this, 'error'));
-    this._parser.on('close', this._handleClose.bind(this));
-    this._parser.on('metadata', this._metadata.bind(this));
-    this._parser.on('gamma', this._gamma.bind(this));
-    this._parser.on('parsed', function(data) {
-        this.data = data;
-        this.emit('parsed', data);
-    }.bind(this));
-
-    this._packer = new Packer(options);
-    this._packer.on('data', this.emit.bind(this, 'data'));
-    this._packer.on('end', this.emit.bind(this, 'end'));
-    this._parser.on('close', this._handleClose.bind(this));
-    this._packer.on('error', this.emit.bind(this, 'error'));
-
-};
-util.inherits(PNG, Stream);
-
-
-PNG.prototype.pack = function() {
-
-    process.nextTick(function() {
-        this._packer.pack(this.data, this.width, this.height);
-    }.bind(this));
-
-    return this;
-};
-
-
-PNG.prototype.parse = function(data, callback) {
-
-    if (callback) {
-        var onParsed = null, onError = null;
-
-        this.once('parsed', onParsed = function(data) {
-            this.removeListener('error', onError);
-
-            this.data = data;
-            callback(null, this);
-
-        }.bind(this));
-
-        this.once('error', onError = function(err) {
-            this.removeListener('parsed', onParsed);
-
-            callback(err, null);
-        }.bind(this));
-    }
-
-    this.end(data);
-    return this;
-};
-
-PNG.prototype.write = function(data) {
-    this._parser.write(data);
-    return true;
-};
-
-PNG.prototype.end = function(data) {
-    this._parser.end(data);
-};
-
-PNG.prototype._metadata = function(metadata) {
-    this.width = metadata.width;
-    this.height = metadata.height;
-    this.data = metadata.data;
-
-    delete metadata.data;
-    this.emit('metadata', metadata);
-};
-
-PNG.prototype._gamma = function(gamma) {
-    this.gamma = gamma;
-};
-
-PNG.prototype._handleClose = function() {
-    if (!this._parser.writable && !this._packer.readable)
-        this.emit('close');
-};
-
-
-PNG.prototype.bitblt = function(dst, sx, sy, w, h, dx, dy) {
-
-    var src = this;
-
-    if (sx > src.width || sy > src.height
-            || sx + w > src.width || sy + h > src.height)
-        throw new Error('bitblt reading outside image');
-    if (dx > dst.width || dy > dst.height
-            || dx + w > dst.width || dy + h > dst.height)
-        throw new Error('bitblt writing outside image');
-
-    for (var y = 0; y < h; y++) {
-        src.data.copy(dst.data,
-            ((dy + y) * dst.width + dx) << 2,
-            ((sy + y) * src.width + sx) << 2,
-            ((sy + y) * src.width + sx + w) << 2
-        );
-    }
-
-    return this;
-};
-
-}).call(this,require("q+64fw"),require("buffer").Buffer)
-},{"./packer":52,"./parser":53,"buffer":73,"q+64fw":78,"stream":96,"util":99}],55:[function(require,module,exports){
-(function (process){
-var Stream = require('stream')
-
-// through
-//
-// a stream that does nothing but re-emit the input.
-// useful for aggregating a series of changing but not ending streams into one stream)
-
-exports = module.exports = through
-through.through = through
-
-//create a readable writable stream.
-
-function through (write, end, opts) {
-  write = write || function (data) { this.queue(data) }
-  end = end || function () { this.queue(null) }
-
-  var ended = false, destroyed = false, buffer = [], _ended = false
-  var stream = new Stream()
-  stream.readable = stream.writable = true
-  stream.paused = false
-
-//  stream.autoPause   = !(opts && opts.autoPause   === false)
-  stream.autoDestroy = !(opts && opts.autoDestroy === false)
-
-  stream.write = function (data) {
-    write.call(this, data)
-    return !stream.paused
-  }
-
-  function drain() {
-    while(buffer.length && !stream.paused) {
-      var data = buffer.shift()
-      if(null === data)
-        return stream.emit('end')
-      else
-        stream.emit('data', data)
-    }
-  }
-
-  stream.queue = stream.push = function (data) {
-//    console.error(ended)
-    if(_ended) return stream
-    if(data == null) _ended = true
-    buffer.push(data)
-    drain()
-    return stream
-  }
-
-  //this will be registered as the first 'end' listener
-  //must call destroy next tick, to make sure we're after any
-  //stream piped from here.
-  //this is only a problem if end is not emitted synchronously.
-  //a nicer way to do this is to make sure this is the last listener for 'end'
-
-  stream.on('end', function () {
-    stream.readable = false
-    if(!stream.writable && stream.autoDestroy)
-      process.nextTick(function () {
-        stream.destroy()
-      })
-  })
-
-  function _end () {
-    stream.writable = false
-    end.call(stream)
-    if(!stream.readable && stream.autoDestroy)
-      stream.destroy()
-  }
-
-  stream.end = function (data) {
-    if(ended) return
-    ended = true
-    if(arguments.length) stream.write(data)
-    _end() // will emit or queue
-    return stream
-  }
-
-  stream.destroy = function () {
-    if(destroyed) return
-    destroyed = true
-    ended = true
-    buffer.length = 0
-    stream.writable = stream.readable = false
-    stream.emit('close')
-    return stream
-  }
-
-  stream.pause = function () {
-    if(stream.paused) return
-    stream.paused = true
-    return stream
-  }
-
-  stream.resume = function () {
-    if(stream.paused) {
-      stream.paused = false
-      stream.emit('resume')
-    }
-    drain()
-    //may have become paused again,
-    //as drain emits 'data'.
-    if(!stream.paused)
-      stream.emit('drain')
-    return stream
-  }
-  return stream
-}
-
-
-}).call(this,require("q+64fw"))
-},{"q+64fw":78,"stream":96}],56:[function(require,module,exports){
-"use strict"
-
-var PNG = require("pngjs").PNG
-var through = require("through")
-
-function handleData(array, data) {
-  var i, j, ptr = 0, c
-  if(array.shape.length === 3) {
-    if(array.shape[2] === 3) {
-      for(i=0; i<array.shape[0]; ++i) {
-        for(j=0; j<array.shape[1]; ++j) {
-          data[ptr++] = array.get(i,j,0)>>>0
-          data[ptr++] = array.get(i,j,1)>>>0
-          data[ptr++] = array.get(i,j,2)>>>0
-          data[ptr++] = 255
-        }
-      }
-    } else if(array.shape[2] === 4) {
-      for(i=0; i<array.shape[0]; ++i) {
-        for(j=0; j<array.shape[1]; ++j) {
-          data[ptr++] = array.get(i,j,0)>>>0
-          data[ptr++] = array.get(i,j,1)>>>0
-          data[ptr++] = array.get(i,j,2)>>>0
-          data[ptr++] = array.get(i,j,3)>>>0
-        }
-      }
-    } else if(array.shape[3] === 1) {
-      for(i=0; i<array.shape[0]; ++i) {
-        for(j=0; j<array.shape[1]; ++j) {
-          var c = array.get(i,j,0)>>>0
-          data[ptr++] = c
-          data[ptr++] = c
-          data[ptr++] = c
-          data[ptr++] = 255
-        }
-      }
-    } else {
-      return new Error("Incompatible array shape")
-    }
-  } else if(array.shape.length === 2) {
-    for(i=0; i<array.shape[0]; ++i) {
-      for(j=0; j<array.shape[1]; ++j) {
-        var c = array.get(i,j,0)>>>0
-        data[ptr++] = c
-        data[ptr++] = c
-        data[ptr++] = c
-        data[ptr++] = 255
-      }
-    }
-  } else {
-    return new Error("Incompatible array shape")
-  }
-  return data
-}
-
-function haderror(err) {
-  var result = through()
-  result.emit("error", err)
-  return result
-}
-
-module.exports = function savePixels(array, type) {
-  switch(type.toUpperCase()) {
-    case "PNG":
-    case ".PNG":
-      var png = new PNG({
-        width: array.shape[1],
-        height: array.shape[0]
-      })
-      var data = handleData(array, png.data)
-      if (typeof data === "Error") return haderror(data)
-      png.data = data
-      return png.pack()
-
-    case "CANVAS":
-      var canvas = document.createElement("canvas")
-      var context = canvas.getContext("2d")
-      canvas.width = array.shape[1]
-      canvas.height = array.shape[0]
-      var imageData = context.getImageData(0, 0, canvas.width, canvas.height)
-      var data = imageData.data
-      data = handleData(array, data)
-      if (typeof data === "Error") return haderror(data)
-      context.putImageData(imageData, 0, 0)
-      return canvas
-    
-    default:
-      return haderror(new Error("Unsupported file type: " + type))
-  }
-}
-
-},{"pngjs":54,"through":55}],57:[function(require,module,exports){
+module.exports=require(33)
+},{}],42:[function(require,module,exports){
 // http://wiki.commonjs.org/wiki/Unit_Testing/1.0
 //
 // THIS IS NOT TESTED NOR LIKELY TO WORK OUTSIDE V8!
@@ -49550,14 +46620,14 @@ var objectKeys = Object.keys || function (obj) {
   return keys;
 };
 
-},{"util/":59}],58:[function(require,module,exports){
+},{"util/":44}],43:[function(require,module,exports){
 module.exports = function isBuffer(arg) {
   return arg && typeof arg === 'object'
     && typeof arg.copy === 'function'
     && typeof arg.fill === 'function'
     && typeof arg.readUInt8 === 'function';
 }
-},{}],59:[function(require,module,exports){
+},{}],44:[function(require,module,exports){
 (function (process,global){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -50147,7 +47217,7 @@ function hasOwnProperty(obj, prop) {
 }
 
 }).call(this,require("q+64fw"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./support/isBuffer":58,"inherits":77,"q+64fw":78}],60:[function(require,module,exports){
+},{"./support/isBuffer":43,"inherits":62,"q+64fw":63}],45:[function(require,module,exports){
 'use strict';
 
 
@@ -50250,7 +47320,7 @@ exports.setTyped = function (on) {
 };
 
 exports.setTyped(TYPED_OK);
-},{}],61:[function(require,module,exports){
+},{}],46:[function(require,module,exports){
 'use strict';
 
 // Note: adler32 takes 12% for level 0 and 2% for level 6.
@@ -50283,7 +47353,7 @@ function adler32(adler, buf, len, pos) {
 
 
 module.exports = adler32;
-},{}],62:[function(require,module,exports){
+},{}],47:[function(require,module,exports){
 module.exports = {
 
   /* Allowed flush values; see deflate() and inflate() below for details */
@@ -50331,7 +47401,7 @@ module.exports = {
   Z_DEFLATED:               8
   //Z_NULL:                 null // Use -1 or null inline, depending on var type
 };
-},{}],63:[function(require,module,exports){
+},{}],48:[function(require,module,exports){
 'use strict';
 
 // Note: we can't get significant speed boost here.
@@ -50373,7 +47443,7 @@ function crc32(crc, buf, len, pos) {
 
 
 module.exports = crc32;
-},{}],64:[function(require,module,exports){
+},{}],49:[function(require,module,exports){
 'use strict';
 
 var utils   = require('../utils/common');
@@ -52139,7 +49209,7 @@ exports.deflatePending = deflatePending;
 exports.deflatePrime = deflatePrime;
 exports.deflateTune = deflateTune;
 */
-},{"../utils/common":60,"./adler32":61,"./crc32":63,"./messages":68,"./trees":69}],65:[function(require,module,exports){
+},{"../utils/common":45,"./adler32":46,"./crc32":48,"./messages":53,"./trees":54}],50:[function(require,module,exports){
 'use strict';
 
 // See state defs from inflate.js
@@ -52466,7 +49536,7 @@ module.exports = function inflate_fast(strm, start) {
   return;
 };
 
-},{}],66:[function(require,module,exports){
+},{}],51:[function(require,module,exports){
 'use strict';
 
 
@@ -53970,7 +51040,7 @@ exports.inflateSync = inflateSync;
 exports.inflateSyncPoint = inflateSyncPoint;
 exports.inflateUndermine = inflateUndermine;
 */
-},{"../utils/common":60,"./adler32":61,"./crc32":63,"./inffast":65,"./inftrees":67}],67:[function(require,module,exports){
+},{"../utils/common":45,"./adler32":46,"./crc32":48,"./inffast":50,"./inftrees":52}],52:[function(require,module,exports){
 'use strict';
 
 
@@ -54297,7 +51367,7 @@ module.exports = function inflate_table(type, lens, lens_index, codes, table, ta
   opts.bits = root;
   return 0;
 };
-},{"../utils/common":60}],68:[function(require,module,exports){
+},{"../utils/common":45}],53:[function(require,module,exports){
 'use strict';
 
 module.exports = {
@@ -54311,7 +51381,7 @@ module.exports = {
   '-5':   'buffer error',        /* Z_BUF_ERROR     (-5) */
   '-6':   'incompatible version' /* Z_VERSION_ERROR (-6) */
 };
-},{}],69:[function(require,module,exports){
+},{}],54:[function(require,module,exports){
 'use strict';
 
 
@@ -55511,7 +52581,7 @@ exports._tr_stored_block = _tr_stored_block;
 exports._tr_flush_block  = _tr_flush_block;
 exports._tr_tally = _tr_tally;
 exports._tr_align = _tr_align;
-},{"../utils/common":60}],70:[function(require,module,exports){
+},{"../utils/common":45}],55:[function(require,module,exports){
 'use strict';
 
 
@@ -55541,7 +52611,7 @@ function ZStream() {
 }
 
 module.exports = ZStream;
-},{}],71:[function(require,module,exports){
+},{}],56:[function(require,module,exports){
 (function (process,Buffer){
 var msg = require('pako/lib/zlib/messages');
 var zstream = require('pako/lib/zlib/zstream');
@@ -55781,7 +52851,7 @@ Zlib.prototype._error = function(status) {
 exports.Zlib = Zlib;
 
 }).call(this,require("q+64fw"),require("buffer").Buffer)
-},{"buffer":73,"pako/lib/zlib/constants":62,"pako/lib/zlib/deflate.js":64,"pako/lib/zlib/inflate.js":66,"pako/lib/zlib/messages":68,"pako/lib/zlib/zstream":70,"q+64fw":78}],72:[function(require,module,exports){
+},{"buffer":58,"pako/lib/zlib/constants":47,"pako/lib/zlib/deflate.js":49,"pako/lib/zlib/inflate.js":51,"pako/lib/zlib/messages":53,"pako/lib/zlib/zstream":55,"q+64fw":63}],57:[function(require,module,exports){
 (function (process,Buffer){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -56395,7 +53465,7 @@ util.inherits(InflateRaw, Zlib);
 util.inherits(Unzip, Zlib);
 
 }).call(this,require("q+64fw"),require("buffer").Buffer)
-},{"./binding":71,"_stream_transform":94,"assert":57,"buffer":73,"q+64fw":78,"util":99}],73:[function(require,module,exports){
+},{"./binding":56,"_stream_transform":79,"assert":42,"buffer":58,"q+64fw":63,"util":84}],58:[function(require,module,exports){
 /*!
  * The buffer module from node.js, for the browser.
  *
@@ -57545,7 +54615,7 @@ function assert (test, message) {
   if (!test) throw new Error(message || 'Failed assertion')
 }
 
-},{"base64-js":74,"ieee754":75}],74:[function(require,module,exports){
+},{"base64-js":59,"ieee754":60}],59:[function(require,module,exports){
 var lookup = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 ;(function (exports) {
@@ -57668,7 +54738,7 @@ var lookup = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 	module.exports.fromByteArray = uint8ToBase64
 }())
 
-},{}],75:[function(require,module,exports){
+},{}],60:[function(require,module,exports){
 exports.read = function(buffer, offset, isLE, mLen, nBytes) {
   var e, m,
       eLen = nBytes * 8 - mLen - 1,
@@ -57754,7 +54824,7 @@ exports.write = function(buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128;
 };
 
-},{}],76:[function(require,module,exports){
+},{}],61:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -58059,9 +55129,9 @@ function isUndefined(arg) {
   return arg === void 0;
 }
 
-},{}],77:[function(require,module,exports){
-module.exports=require(19)
-},{}],78:[function(require,module,exports){
+},{}],62:[function(require,module,exports){
+module.exports=require(29)
+},{}],63:[function(require,module,exports){
 // shim for using process in browser
 
 var process = module.exports = {};
@@ -58126,7 +55196,7 @@ process.chdir = function (dir) {
     throw new Error('process.chdir is not supported');
 };
 
-},{}],79:[function(require,module,exports){
+},{}],64:[function(require,module,exports){
 (function (global){
 /*! http://mths.be/punycode v1.2.4 by @mathias */
 ;(function(root) {
@@ -58637,7 +55707,7 @@ process.chdir = function (dir) {
 }(this));
 
 }).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],80:[function(require,module,exports){
+},{}],65:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -58723,7 +55793,7 @@ var isArray = Array.isArray || function (xs) {
   return Object.prototype.toString.call(xs) === '[object Array]';
 };
 
-},{}],81:[function(require,module,exports){
+},{}],66:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -58810,16 +55880,16 @@ var objectKeys = Object.keys || function (obj) {
   return res;
 };
 
-},{}],82:[function(require,module,exports){
+},{}],67:[function(require,module,exports){
 'use strict';
 
 exports.decode = exports.parse = require('./decode');
 exports.encode = exports.stringify = require('./encode');
 
-},{"./decode":80,"./encode":81}],83:[function(require,module,exports){
+},{"./decode":65,"./encode":66}],68:[function(require,module,exports){
 module.exports = require("./lib/_stream_duplex.js")
 
-},{"./lib/_stream_duplex.js":84}],84:[function(require,module,exports){
+},{"./lib/_stream_duplex.js":69}],69:[function(require,module,exports){
 (function (process){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -58912,7 +55982,7 @@ function forEach (xs, f) {
 }
 
 }).call(this,require("q+64fw"))
-},{"./_stream_readable":86,"./_stream_writable":88,"core-util-is":89,"inherits":77,"q+64fw":78}],85:[function(require,module,exports){
+},{"./_stream_readable":71,"./_stream_writable":73,"core-util-is":74,"inherits":62,"q+64fw":63}],70:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -58960,7 +56030,7 @@ PassThrough.prototype._transform = function(chunk, encoding, cb) {
   cb(null, chunk);
 };
 
-},{"./_stream_transform":87,"core-util-is":89,"inherits":77}],86:[function(require,module,exports){
+},{"./_stream_transform":72,"core-util-is":74,"inherits":62}],71:[function(require,module,exports){
 (function (process){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -59923,7 +56993,7 @@ function indexOf (xs, x) {
 }
 
 }).call(this,require("q+64fw"))
-},{"buffer":73,"core-util-is":89,"events":76,"inherits":77,"isarray":90,"q+64fw":78,"stream":96,"string_decoder/":91}],87:[function(require,module,exports){
+},{"buffer":58,"core-util-is":74,"events":61,"inherits":62,"isarray":75,"q+64fw":63,"stream":81,"string_decoder/":76}],72:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -60135,7 +57205,7 @@ function done(stream, er) {
   return stream.push(null);
 }
 
-},{"./_stream_duplex":84,"core-util-is":89,"inherits":77}],88:[function(require,module,exports){
+},{"./_stream_duplex":69,"core-util-is":74,"inherits":62}],73:[function(require,module,exports){
 (function (process){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -60526,7 +57596,7 @@ function endWritable(stream, state, cb) {
 }
 
 }).call(this,require("q+64fw"))
-},{"./_stream_duplex":84,"buffer":73,"core-util-is":89,"inherits":77,"q+64fw":78,"stream":96}],89:[function(require,module,exports){
+},{"./_stream_duplex":69,"buffer":58,"core-util-is":74,"inherits":62,"q+64fw":63,"stream":81}],74:[function(require,module,exports){
 (function (Buffer){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -60636,12 +57706,12 @@ function objectToString(o) {
   return Object.prototype.toString.call(o);
 }
 }).call(this,require("buffer").Buffer)
-},{"buffer":73}],90:[function(require,module,exports){
+},{"buffer":58}],75:[function(require,module,exports){
 module.exports = Array.isArray || function (arr) {
   return Object.prototype.toString.call(arr) == '[object Array]';
 };
 
-},{}],91:[function(require,module,exports){
+},{}],76:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -60843,10 +57913,10 @@ function base64DetectIncompleteChar(buffer) {
   return incomplete;
 }
 
-},{"buffer":73}],92:[function(require,module,exports){
+},{"buffer":58}],77:[function(require,module,exports){
 module.exports = require("./lib/_stream_passthrough.js")
 
-},{"./lib/_stream_passthrough.js":85}],93:[function(require,module,exports){
+},{"./lib/_stream_passthrough.js":70}],78:[function(require,module,exports){
 exports = module.exports = require('./lib/_stream_readable.js');
 exports.Readable = exports;
 exports.Writable = require('./lib/_stream_writable.js');
@@ -60854,13 +57924,13 @@ exports.Duplex = require('./lib/_stream_duplex.js');
 exports.Transform = require('./lib/_stream_transform.js');
 exports.PassThrough = require('./lib/_stream_passthrough.js');
 
-},{"./lib/_stream_duplex.js":84,"./lib/_stream_passthrough.js":85,"./lib/_stream_readable.js":86,"./lib/_stream_transform.js":87,"./lib/_stream_writable.js":88}],94:[function(require,module,exports){
+},{"./lib/_stream_duplex.js":69,"./lib/_stream_passthrough.js":70,"./lib/_stream_readable.js":71,"./lib/_stream_transform.js":72,"./lib/_stream_writable.js":73}],79:[function(require,module,exports){
 module.exports = require("./lib/_stream_transform.js")
 
-},{"./lib/_stream_transform.js":87}],95:[function(require,module,exports){
+},{"./lib/_stream_transform.js":72}],80:[function(require,module,exports){
 module.exports = require("./lib/_stream_writable.js")
 
-},{"./lib/_stream_writable.js":88}],96:[function(require,module,exports){
+},{"./lib/_stream_writable.js":73}],81:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -60989,7 +58059,7 @@ Stream.prototype.pipe = function(dest, options) {
   return dest;
 };
 
-},{"events":76,"inherits":77,"readable-stream/duplex.js":83,"readable-stream/passthrough.js":92,"readable-stream/readable.js":93,"readable-stream/transform.js":94,"readable-stream/writable.js":95}],97:[function(require,module,exports){
+},{"events":61,"inherits":62,"readable-stream/duplex.js":68,"readable-stream/passthrough.js":77,"readable-stream/readable.js":78,"readable-stream/transform.js":79,"readable-stream/writable.js":80}],82:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -61698,8 +58768,8 @@ function isNullOrUndefined(arg) {
   return  arg == null;
 }
 
-},{"punycode":79,"querystring":82}],98:[function(require,module,exports){
-module.exports=require(58)
-},{}],99:[function(require,module,exports){
-module.exports=require(59)
-},{"./support/isBuffer":98,"inherits":77,"q+64fw":78}]},{},[1])
+},{"punycode":64,"querystring":67}],83:[function(require,module,exports){
+module.exports=require(43)
+},{}],84:[function(require,module,exports){
+module.exports=require(44)
+},{"./support/isBuffer":83,"inherits":62,"q+64fw":63}]},{},[1])
