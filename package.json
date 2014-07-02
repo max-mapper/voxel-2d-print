@@ -17,6 +17,8 @@
     "ndarray": "~1.0.8",
     "ndarray-fill": "~0.1.0",
     "voxel-critter": "~0.1.1",
-    "color": "~0.4.4"
+    "color": "~0.4.4",
+    "contour-2d": "^1.0.0",
+    "save-pixels": "^1.0.0"
   }
 }

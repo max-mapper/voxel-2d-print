@@ -1,6 +1,7 @@
 var ndarray = require('ndarray')
 var savePixels = require('save-pixels')
 var color = require('color')
+var contour = require('contour-2d')
 
 var dirs = {
   "right": [1, 0],
@@ -25,6 +26,8 @@ module.exports = function(voxels, colors, size) {
     canvases.push(canvas)
   })
 
+  // add a few extra strips of each color at the top, just so theres extra material
+  // to use for the construction if there ar e.g. holes or accidents
   var strips = extraStrips(size, Object.keys(usedColors))
   document.body.appendChild(strips)
   
@@ -75,20 +78,24 @@ function layerCanvas(voxels, layers, layerIdx, size, colors, canvas) {
   canvas.setAttribute('width', w * size)
   canvas.setAttribute('height', h * size)
   var ctx = canvas.getContext('2d')
+
   
   for (var x = 0; x < w; x++) {
     for (var z = 0; z < h; z++) {
       var val = layer.get(x, z)
       if (!val) continue
       
+      // label page number to keep track of layers after printing
       ctx.fillStyle = "black"
       ctx.font = "10pt Arial"
       ctx.fillText("" + layerIdx, 10, 20)
       
+      // fill in colored square
       ctx.fillStyle = colors[val]
       ctx.fillRect(x * size, z * size, size, size)
       usedColors[colors[val]] = true
       
+      // render dotted lines
       var neighbors = emptyNeighbors([x,z], layer)
       neighbors.map(function(dir) {
         var d = dirs[dir]
@@ -122,6 +129,55 @@ function layerCanvas(voxels, layers, layerIdx, size, colors, canvas) {
       })
     }
   }
+
+  //Render tabs
+  var dilated = ndarray(new Uint8Array((w+2)*(h+2)), [w+2, h+2])
+  for(var i=0; i<w; ++i) {
+    for(var j=0; j<h; ++j) {
+      if(layer.get(i,j) !== 0) {
+        dilated.set(i+1,j+1,1)
+        dilated.set(i,j+1,1)
+        dilated.set(i+2,j+1,1)
+        dilated.set(i+1,j,1)
+        dilated.set(i+1,j+2,1)
+      }
+    }
+  }
+
+
+  function clamp(x) {
+    return (x < 0) ? -1 : ((x > 0) ? 1 : 0)
+  }
+
+
+  var loops = contour(dilated.transpose(1,0))
+  for(var n=0; n<loops.length; ++n) {
+    var loop = loops[n]
+    for(var i=0; i<loop.length; ++i) {
+      var a = loop[i]
+      var b = loop[(i+1) % loop.length]
+
+      var par  = [b[0]-a[0], b[1]-a[1]].map(clamp)
+      var perp = [-par[1], par[0]]
+
+      console.log(par, perp)
+
+      ctx.beginPath()
+      ctx.setLineDash([5])
+
+      ctx.moveTo(size*(a[0]-1), 
+                 size*(a[1]-1))
+      ctx.lineTo(size*(a[0]-1+0.4*(par[0]+0.9*perp[0])), 
+                 size*(a[1]-1+0.4*(par[1]+0.9*perp[1])))
+      ctx.lineTo(size*(b[0]-1+0.4*(-par[0]+0.9*perp[0])), 
+                 size*(b[1]-1+0.4*(-par[1]+0.9*perp[1])))
+      ctx.lineTo(size*(b[0]-1), 
+                 size*(b[1]-1))
+
+      ctx.stroke()
+    }
+  }
+
   
   return canvas
 }
