@@ -11,15 +11,29 @@ var dirs = {
 }
 
 var usedColors
+var paperSize = [210, 280];
 
-module.exports = function(voxels, colors, size) {
-  if (!size) size = 50
+module.exports = function(voxels, colors) {
+
   colors = colors.map(function(c) {
     var col = color('rgb(' + c.map(function(v) { return v * 255 }).join(', ') + ')')
     return col.hexString()
   })
   usedColors = {}
-  var layers = sliceLayers(voxels)
+  var bounds = [[Infinity, Infinity], [0, 0]];
+  var layers = sliceLayers(voxels, bounds);
+
+  var boundDims = [
+    bounds[1][0] - bounds[0][0],
+    bounds[1][1] - bounds[0][1]
+  ];
+
+  var ratio = paperSize.map(function(p, i) {
+    return p / boundDims[i];
+  });
+
+  var size = Math.min(ratio[0], ratio[1]) * (72 / 25.4);
+
   var canvases = []
   Object.keys(layers).map(function(layer) {
     var canvas = layerCanvas(voxels, layers, layer, size, colors)
@@ -30,24 +44,37 @@ module.exports = function(voxels, colors, size) {
   // to use for the construction if there ar e.g. holes or accidents
   var strips = extraStrips(size, Object.keys(usedColors))
   document.body.appendChild(strips)
-  
+
   canvases.map(function(canv) { document.body.appendChild(canv) })
 }
 
-function sliceLayers(voxels) {
+function prepareBoundingBox(x, z, box) {
+  box[0][0] = Math.min(box[0][0], x);
+  box[0][1] = Math.min(box[0][1], z);
+
+  box[1][0] = Math.max(box[1][0], x);
+  box[1][1] = Math.max(box[1][1], z);
+}
+
+function sliceLayers(voxels, bounds) {
   var s = voxels.shape
   var layers = {}
+
   for (var x = 0; x < s[0]; x++) {
     for (var z = 0; z < s[2]; z++) {
       for (var y = 0; y < s[1]; y++) {
         var val = voxels.get(x, y, z)
         if (!val) continue
+
+        prepareBoundingBox(x, z, bounds);
+
         var dims = [voxels.shape[0] + 4, voxels.shape[2] + 4]
         if (!layers[y]) layers[y] = ndarray(new Uint32Array(dims[0] * dims[1]), dims)
         layers[y].set(x + 2, z + 2, val)
       }
-    } 
+    }
   }
+
   return layers
 }
 
@@ -56,7 +83,7 @@ function extraStrips(size, colors, canvas) {
   var w = 10
   var h = colors.length
   canvas.setAttribute('width', w * size)
-  canvas.setAttribute('height', h * 2 * size)
+  canvas.setAttribute('height', h * size)
   var ctx = canvas.getContext('2d')
 
   for (var x = 0; x < w; x++) {
