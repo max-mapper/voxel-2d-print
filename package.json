@@ -1,7 +1,7 @@
 {
   "name": "voxel-2d-print",
-  "version": "0.0.0",
-  "description": "",
+  "version": "1.0.0",
+  "description": "papercraft for voxel.js",
   "main": "index.js",
   "scripts": {
     "start": "beefy demo.js:bundle.js"

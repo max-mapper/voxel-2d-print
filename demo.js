@@ -12,9 +12,7 @@ var png = mario
 
 var parsed = url.parse(window.location.href, true)
 if (parsed.query && parsed.query.png) getProxyImage(parsed.query.png, loadImage)
-else document.body.innerHTML = 'Drop voxel png or ' +
-  '<a href="?png=http://i.imgur.com/ccBkMVY.png">view example</a>' +
-  '<br>Design your own at <a href="http://voxelbuilder.com/">Voxel Builder</a>'
+else document.body.innerHTML = '<div class="instructions">Drop voxel png here!</div><div class="instructions">...or <a href="?png=http://i.imgur.com/ccBkMVY.png">view example</a></div>';
 
 function loadImage(image) {
   var hash = critter.load(image)
