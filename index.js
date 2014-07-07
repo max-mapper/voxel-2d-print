@@ -45,7 +45,10 @@ module.exports = function(voxels, colors) {
   var strips = extraStrips(size, Object.keys(usedColors))
   document.body.appendChild(strips)
 
-  canvases.map(function(canv) { document.body.appendChild(canv) })
+  canvases.map(function(canv) {
+    console.log(canv.toDataURL('image/png'))
+    document.body.appendChild(canv)
+  })
 }
 
 function prepareBoundingBox(x, z, box) {
@@ -186,8 +189,6 @@ function layerCanvas(voxels, layers, layerIdx, size, colors, canvas) {
 
       var par  = [b[0]-a[0], b[1]-a[1]].map(clamp)
       var perp = [-par[1], par[0]]
-
-      console.log(par, perp)
 
       ctx.beginPath()
       ctx.setLineDash([5])
