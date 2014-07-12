@@ -1,6 +1,5 @@
 var ndarray = require('ndarray')
 var savePixels = require('save-pixels')
-var color = require('color')
 var contour = require('contour-2d')
 
 var dirs = {
@@ -14,11 +13,6 @@ var usedColors
 var paperSize = [210, 280];
 
 module.exports = function(voxels, colors) {
-
-  colors = colors.map(function(c) {
-    var col = color('rgb(' + c.map(function(v) { return v * 255 }).join(', ') + ')')
-    return col.hexString()
-  })
   usedColors = {}
   var bounds = [[Infinity, Infinity], [0, 0]];
   var layers = sliceLayers(voxels, bounds);

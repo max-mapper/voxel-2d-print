@@ -1,6 +1,7 @@
 var critter = require('voxel-critter')
 var ndarray = require('ndarray')
 var fill = require("ndarray-fill")
+var color = require('color')
 var url = require('url')
 var voxel2dprinter = require('./')
 
@@ -33,7 +34,12 @@ function loadImage(image) {
   
   document.body.appendChild(image)
 
-  var stack = voxel2dprinter(voxels, data.colors, 80)
+  var colors = data.colors.map(function(c) {
+    var col = color('rgb(' + c.map(function(v) { return v * 255 }).join(', ') + ')')
+    return col.hexString()
+  })
+
+  var stack = voxel2dprinter(voxels, colors, 80)
   document.body.appendChild(stack.strips)
   stack.canvases.map(function(canv) {
     console.log(canv.toDataURL('image/png'))
