@@ -33,8 +33,13 @@ function loadImage(image) {
   
   document.body.appendChild(image)
 
-  var voxelFaces = voxel2dprinter(voxels, data.colors, 80)
-
+  var stack = voxel2dprinter(voxels, data.colors, 80)
+  document.body.appendChild(stack.strips)
+  stack.canvases.map(function(canv) {
+    console.log(canv.toDataURL('image/png'))
+    document.body.appendChild(canv)
+  })
+  
   image.style.width = '600px'
 }
 
