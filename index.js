@@ -43,12 +43,8 @@ module.exports = function(voxels, colors) {
   // add a few extra strips of each color at the top, just so theres extra material
   // to use for the construction if there ar e.g. holes or accidents
   var strips = extraStrips(size, Object.keys(usedColors))
-  document.body.appendChild(strips)
-
-  canvases.map(function(canv) {
-    console.log(canv.toDataURL('image/png'))
-    document.body.appendChild(canv)
-  })
+  
+  return {strips: strips, canvases: canvases}
 }
 
 function prepareBoundingBox(x, z, box) {
